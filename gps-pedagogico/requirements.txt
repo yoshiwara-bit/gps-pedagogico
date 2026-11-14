@@ -4,3 +4,5 @@ plotly
 openpyxl
 pypdf
 python-docx
+holidays
+icalendar
