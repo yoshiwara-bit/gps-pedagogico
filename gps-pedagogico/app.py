@@ -770,9 +770,9 @@ with aba_indicadores:
             df_ind, df_curs, textos_pdf, qtd = sincronizar_pasta_drive_automatico(ID_PASTA_DRIVE_GPS, GOOGLE_DRIVE_API_KEY)
             st.success(f"{qtd} arquivo(s) lido(s) automaticamente da pasta do Drive.")
             if not df_ind.empty:
-                escola_filtro = st.seescola_filtro = st.selectbox("Filtrar Indicadores por Escola:", ["Todas"] + sorted([str(x) for x in df_ind["Escola"].dropna().unique() if str(x).strip() != ""]))
-               df_ind_filtrado = df_ind if escola_filtro == "Todas" else df_ind[df_ind["Escola"].astype(str) == escola_filtro]
-                st.dataframe(df_exibir, use_container_width=True)
+            escola_filtro = st.selectbox("Filtrar Indicadores por Escola:", ["Todas"] + sorted([str(x) for x in df_ind["Escola"].dropna().unique() if str(x).strip() != ""]))
+            df_exibir = df_ind if escola_filtro == "Todas" else df_ind[df_ind["Escola"].astype(str) == escola_filtro]
+            st.dataframe(df_exibir, use_container_width=True)
 
     with col_up:
         st.markdown("#### 2. Leitura Rápida de Planilha do BI (.xlsx / .csv)")
