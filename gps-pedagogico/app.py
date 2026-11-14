@@ -61,26 +61,31 @@ if df_pastas_raw.empty:
 df_eventos = carregar_aba("Calendario_Eventos")
 df_bloqueios = carregar_aba("Bloqueios_Agenda")
 
-# --- CONSOLIDAÇÃO AUTOMÁTICA DA ABA DE PASTAS (MESMO COM INCISOS EM VÁRIAS LINHAS) ---
+# --- CONSOLIDAÇÃO BLINDADA DA ABA DE PASTAS ---
 def consolidar_pastas(df_p):
-    if df_p.empty:
-        return pd.DataFrame([
-            {"Pasta_Chave": "CONVIVA", "Resolucao": "RESOLUÇÃO SEDUC Nº 1, DE 6 DE JANEIRO DE 2026", "Foco_Pedagogico": "§ 5° - Convivência e Proteção Escolar (Conviva SP)."},
-            {"Pasta_Chave": "QUALIDADE DA AULA", "Resolucao": "RESOLUÇÃO SEDUC Nº 1, DE 6 DE JANEIRO DE 2026", "Foco_Pedagogico": "§ 1° - Qualidade da Aula e formação CGP/CGPG."},
-            {"Pasta_Chave": "DESENVOLVIMENTO CURRICULAR", "Resolucao": "RESOLUÇÃO SEDUC Nº 1, DE 6 DE JANEIRO DE 2026", "Foco_Pedagogico": "§ 3° - Desenvolvimento Curricular, materiais e avaliações."},
-            {"Pasta_Chave": "MULTIPLICA", "Resolucao": "RESOLUÇÃO SEDUC Nº 1, DE 6 DE JANEIRO DE 2026", "Foco_Pedagogico": "§ 2° - Programa Multiplica SP (Resolução SEDUC Nº 90/2025)."},
-            {"Pasta_Chave": "EDUCACAO ESPECIAL", "Resolucao": "RESOLUÇÃO SEDUC Nº 1, DE 6 DE JANEIRO DE 2026", "Foco_Pedagogico": "§ 4° - Educação Especial (EC, PAEE, PEI)."},
-            {"Pasta_Chave": "RECOMPOSICAO", "Resolucao": "RESOLUÇÃO SEDUC Nº 1, DE 6 DE JANEIRO DE 2026", "Foco_Pedagogico": "§ 6° - Recomposição das Aprendizagens."},
-        ])
-    df_c = df_p.copy()
-    col_res = "Resolução" if "Resolução" in df_c.columns else ("Resolucao" if "Resolucao" in df_c.columns else df_c.columns[1])
-    df_c["Pasta"] = df_c["Pasta"].ffill()
-    df_c[col_res] = df_c[col_res].ffill()
-    df_c = df_c.dropna(subset=["Foco_Pedagogico"])
-    agrupado = df_c.groupby(["Pasta", col_res], as_index=False).agg({"Foco_Pedagogico": lambda x: "\n".join(x.astype(str))})
-    agrupado["Pasta_Chave"] = agrupado["Pasta"].apply(mapear_pasta_chave)
-    agrupado = agrupado.rename(columns={col_res: "Resolucao"})
-    return agrupado
+    padrao = pd.DataFrame([
+        {"Pasta_Chave": "CONVIVA", "Resolucao": "RESOLUÇÃO SEDUC Nº 1, DE 6 DE JANEIRO DE 2026", "Foco_Pedagogico": "§ 5° - Convivência e Proteção Escolar (Conviva SP)."},
+        {"Pasta_Chave": "QUALIDADE DA AULA", "Resolucao": "RESOLUÇÃO SEDUC Nº 1, DE 6 DE JANEIRO DE 2026", "Foco_Pedagogico": "§ 1° - Qualidade da Aula e formação CGP/CGPG."},
+        {"Pasta_Chave": "DESENVOLVIMENTO CURRICULAR", "Resolucao": "RESOLUÇÃO SEDUC Nº 1, DE 6 DE JANEIRO DE 2026", "Foco_Pedagogico": "§ 3° - Desenvolvimento Curricular, materiais e avaliações."},
+        {"Pasta_Chave": "MULTIPLICA", "Resolucao": "RESOLUÇÃO SEDUC Nº 1, DE 6 DE JANEIRO DE 2026", "Foco_Pedagogico": "§ 2° - Programa Multiplica SP (Resolução SEDUC Nº 90/2025)."},
+        {"Pasta_Chave": "EDUCACAO ESPECIAL", "Resolucao": "RESOLUÇÃO SEDUC Nº 1, DE 6 DE JANEIRO DE 2026", "Foco_Pedagogico": "§ 4° - Educação Especial (EC, PAEE, PEI)."},
+        {"Pasta_Chave": "RECOMPOSICAO", "Resolucao": "RESOLUÇÃO SEDUC Nº 1, DE 6 DE JANEIRO DE 2026", "Foco_Pedagogico": "§ 6° - Recomposição das Aprendizagens."},
+    ])
+    if df_p.empty or len(df_p.columns) < 3:
+        return padrao
+    try:
+        df_c = df_p.iloc[:, :3].copy()
+        df_c.columns = ["Pasta", "Resolucao", "Foco_Pedagogico"]
+        df_c["Pasta"] = df_c["Pasta"].ffill()
+        df_c["Resolucao"] = df_c["Resolucao"].ffill()
+        df_c = df_c.dropna(subset=["Pasta", "Foco_Pedagogico"])
+        if df_c.empty:
+            return padrao
+        agrupado = df_c.groupby(["Pasta", "Resolucao"], as_index=False).agg({"Foco_Pedagogico": lambda x: "\n".join(x.astype(str))})
+        agrupado["Pasta_Chave"] = agrupado["Pasta"].apply(mapear_pasta_chave)
+        return agrupado
+    except Exception:
+        return padrao
 
 df_pastas = consolidar_pastas(df_pastas_raw)
 
@@ -179,31 +184,34 @@ if "user" not in st.session_state:
         email_in = st.text_input("E-mail Institucional", placeholder="ex: marcos.yoshiwara@educacao.sp.gov.br")
         senha_in = st.text_input("Senha", type="password", placeholder="Primeiro acesso: 123")
         if st.button("Entrar no GPS", type="primary"):
-            email_clean = email_in.strip().lower()
-            senha_clean = senha_in.strip()
-            df_usuarios["Email_Clean"] = df_usuarios["Email"].astype(str).str.strip().str.lower()
-            df_usuarios["Senha_Clean"] = (
-                df_usuarios["Senha"].fillna("123").astype(str).str.strip()
-                .str.replace(r"\.0$", "", regex=True)
-                .replace({"": "123", "nan": "123", "None": "123"})
-            )
-            match = df_usuarios[df_usuarios["Email_Clean"] == email_clean]
-
-            if not match.empty:
-                u_dict = match.iloc[0].to_dict()
-                senha_real = st.session_state["senhas_atualizadas"].get(email_clean, u_dict["Senha_Clean"])
-                if senha_clean == senha_real:
-                    if senha_real == "123":
-                        u_dict["Email"] = email_clean
-                        st.session_state["usuario_troca_senha"] = u_dict
-                        st.rerun()
-                    else:
-                        st.session_state["user"] = u_dict
-                        st.rerun()
-                else:
-                    st.error("Senha incorreta.")
+            if df_usuarios.empty:
+                st.error("Não foi possível ler a aba Usuarios. Verifique se a planilha do Google Sheets está compartilhada como 'Qualquer pessoa com o link'.")
             else:
-                st.error("E-mail não cadastrado na aba Usuarios.")
+                email_clean = email_in.strip().lower()
+                senha_clean = senha_in.strip()
+                df_usuarios["Email_Clean"] = df_usuarios["Email"].astype(str).str.strip().str.lower()
+                df_usuarios["Senha_Clean"] = (
+                    df_usuarios["Senha"].fillna("123").astype(str).str.strip()
+                    .str.replace(r"\.0$", "", regex=True)
+                    .replace({"": "123", "nan": "123", "None": "123"})
+                )
+                match = df_usuarios[df_usuarios["Email_Clean"] == email_clean]
+
+                if not match.empty:
+                    u_dict = match.iloc[0].to_dict()
+                    senha_real = st.session_state["senhas_atualizadas"].get(email_clean, u_dict["Senha_Clean"])
+                    if senha_clean == senha_real:
+                        if senha_real == "123":
+                            u_dict["Email"] = email_clean
+                            st.session_state["usuario_troca_senha"] = u_dict
+                            st.rerun()
+                        else:
+                            st.session_state["user"] = u_dict
+                            st.rerun()
+                    else:
+                        st.error("Senha incorreta.")
+                else:
+                    st.error("E-mail não cadastrado na aba Usuarios.")
     st.stop()
 
 user = st.session_state["user"]
