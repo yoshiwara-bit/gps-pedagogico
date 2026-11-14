@@ -7,61 +7,82 @@ from email.message import EmailMessage
 from datetime import datetime
 from io import BytesIO
 import urllib.parse
+import unicodedata
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(page_title="GPS — Guia Pedagógico Semanal", page_icon="🧭", layout="wide")
 
 # ==============================================================================
-# CONFIGURAÇÕES DA SUA URE (ID DA PLANILHA JÁ INSERIDO)
+# CONFIGURAÇÕES DA SUA URE
 # ==============================================================================
 ID_PLANILHA_GOOGLE = "1v0SdvumxgFhoAH7W1gTJJ_TH50kKB2qa9QaB5ZQMHsU"
 EMAIL_DISPARADOR = "seu.email.sistema@gmail.com"
 SENHA_APP_GMAIL = "COLE_AQUI_AS_16_LETRAS_DO_GMAIL"
 EMAIL_DIRIGENTE = "dirigente@educacao.sp.gov.br"
-EMAIL_CEC = "cec@educacao.sp.gov.br"
+EMAIL_CEC = "marcos.yoshiwara@educacao.sp.gov.br"
 
-# --- LEITURA AUTOMÁTICA DAS 4 ABAS FIXAS DO GOOGLE SHEETS ---
+def normalizar_texto(txt):
+    if pd.isna(txt):
+        return ""
+    s = unicodedata.normalize("NFKD", str(txt)).encode("ASCII", "ignore").decode("ASCII")
+    return s.strip().upper()
+
+def mapear_pasta_chave(pasta_bruta):
+    p = normalizar_texto(pasta_bruta)
+    if "CONVIVA" in p:
+        return "CONVIVA"
+    if "MULTIPLICA" in p:
+        return "MULTIPLICA"
+    if "QUALIDADE" in p:
+        return "QUALIDADE DA AULA"
+    if "DESENVOLVIMENTO CURRICULAR" in p:
+        return "DESENVOLVIMENTO CURRICULAR"
+    if "RECOMPOSICAO" in p:
+        return "RECOMPOSICAO"
+    if "EDUCACAO ESPECIAL" in p:
+        return "EDUCACAO ESPECIAL"
+    if p in ["CEC", "AT"]:
+        return p
+    return p
+
+# --- LEITURA AUTOMÁTICA DAS ABAS DO GOOGLE SHEETS ---
 @st.cache_data(ttl=60)
 def carregar_aba(nome_aba):
     try:
         url = f"https://docs.google.com/spreadsheets/d/{ID_PLANILHA_GOOGLE}/gviz/tq?tqx=out:csv&sheet={nome_aba}"
-        return pd.read_csv(url)
+        return pd.read_csv(url, dtype=str)
     except Exception:
         return pd.DataFrame()
 
 df_usuarios = carregar_aba("Usuarios")
-df_pastas = carregar_aba("Config_Pastas")
+df_pastas_raw = carregar_aba("Config_Pastas")
+if df_pastas_raw.empty:
+    df_pastas_raw = carregar_aba("Confing_Pastas")
 df_eventos = carregar_aba("Calendario_Eventos")
 df_bloqueios = carregar_aba("Bloqueios_Agenda")
 
-# --- BASE DE DEMONSTRAÇÃO CASO ALGUMA ABA ESTEJA VAZIA ---
-if df_usuarios.empty:
-    df_usuarios = pd.DataFrame([
-        {"Email": "cec@educacao.sp.gov.br", "Senha": "123", "Nome": "CEC Coordenação", "Pasta": "CEC", "Componente": "Gestão", "Etapa": "Todas", "Escolas": "Todas"},
-        {"Email": "joao.arte@educacao.sp.gov.br", "Senha": "123", "Nome": "João Silva", "Pasta": "MULTIPLICA", "Componente": "Arte", "Etapa": "Ensino Médio", "Escolas": "Todas"},
-        {"Email": "carlos.conviva@educacao.sp.gov.br", "Senha": "123", "Nome": "Carlos Lima", "Pasta": "CONVIVA", "Componente": "Todos", "Etapa": "Todas", "Escolas": "Todas"},
-        {"Email": "maria.recomp@educacao.sp.gov.br", "Senha": "123", "Nome": "Maria Souza", "Pasta": "RECOMPOSICAO", "Componente": "Matemática", "Etapa": "Anos Finais", "Escolas": "Todas"},
-    ])
+# --- CONSOLIDAÇÃO AUTOMÁTICA DA ABA DE PASTAS (MESMO COM INCISOS EM VÁRIAS LINHAS) ---
+def consolidar_pastas(df_p):
+    if df_p.empty:
+        return pd.DataFrame([
+            {"Pasta_Chave": "CONVIVA", "Resolucao": "RESOLUÇÃO SEDUC Nº 1, DE 6 DE JANEIRO DE 2026", "Foco_Pedagogico": "§ 5° - Convivência e Proteção Escolar (Conviva SP)."},
+            {"Pasta_Chave": "QUALIDADE DA AULA", "Resolucao": "RESOLUÇÃO SEDUC Nº 1, DE 6 DE JANEIRO DE 2026", "Foco_Pedagogico": "§ 1° - Qualidade da Aula e formação CGP/CGPG."},
+            {"Pasta_Chave": "DESENVOLVIMENTO CURRICULAR", "Resolucao": "RESOLUÇÃO SEDUC Nº 1, DE 6 DE JANEIRO DE 2026", "Foco_Pedagogico": "§ 3° - Desenvolvimento Curricular, materiais e avaliações."},
+            {"Pasta_Chave": "MULTIPLICA", "Resolucao": "RESOLUÇÃO SEDUC Nº 1, DE 6 DE JANEIRO DE 2026", "Foco_Pedagogico": "§ 2° - Programa Multiplica SP (Resolução SEDUC Nº 90/2025)."},
+            {"Pasta_Chave": "EDUCACAO ESPECIAL", "Resolucao": "RESOLUÇÃO SEDUC Nº 1, DE 6 DE JANEIRO DE 2026", "Foco_Pedagogico": "§ 4° - Educação Especial (EC, PAEE, PEI)."},
+            {"Pasta_Chave": "RECOMPOSICAO", "Resolucao": "RESOLUÇÃO SEDUC Nº 1, DE 6 DE JANEIRO DE 2026", "Foco_Pedagogico": "§ 6° - Recomposição das Aprendizagens."},
+        ])
+    df_c = df_p.copy()
+    col_res = "Resolução" if "Resolução" in df_c.columns else ("Resolucao" if "Resolucao" in df_c.columns else df_c.columns[1])
+    df_c["Pasta"] = df_c["Pasta"].ffill()
+    df_c[col_res] = df_c[col_res].ffill()
+    df_c = df_c.dropna(subset=["Foco_Pedagogico"])
+    agrupado = df_c.groupby(["Pasta", col_res], as_index=False).agg({"Foco_Pedagogico": lambda x: "\n".join(x.astype(str))})
+    agrupado["Pasta_Chave"] = agrupado["Pasta"].apply(mapear_pasta_chave)
+    agrupado = agrupado.rename(columns={col_res: "Resolucao"})
+    return agrupado
 
-if df_pastas.empty:
-    df_pastas = pd.DataFrame([
-        {"Pasta": "CONVIVA", "Resolucao": "Resolução SEDUC nº XX/2026", "Foco_Pedagogico": "Art. Xº, § 1º (Conviva SP): Busca Ativa Escolar, frequência, clima escolar, Protocolo 179 e proteção integral."},
-        {"Pasta": "MULTIPLICA", "Resolucao": "Resolução SEDUC nº XX/2026", "Foco_Pedagogico": "Art. Xº, § 2º (Multiplica SP): Acompanhamento formativo de multiplicadores/cursistas e mobilização operacional."},
-        {"Pasta": "QUALIDADE_AULA", "Resolucao": "Resolução SEDUC nº XX/2026", "Foco_Pedagogico": "Art. Xº, § 3º (Qualidade da Aula): Gestão de sala de aula, uso do Material Digital e engajamento nas plataformas."},
-        {"Pasta": "DESENV_CURRICULAR", "Resolucao": "Resolução SEDUC nº XX/2026", "Foco_Pedagogico": "Art. Xº, § 4º (Desenvolvimento Curricular): Implementação do Currículo Paulista, Escopo-Sequência e proficiência."},
-        {"Pasta": "RECOMPOSICAO", "Resolucao": "Resolução SEDUC nº XX/2026", "Foco_Pedagogico": "Art. Xº, § 5º (Recomposição): Atendimento focalizado aos estudantes Abaixo do Básico e Orientação de Estudos."},
-        {"Pasta": "EDUCACAO_ESPECIAL", "Resolucao": "Resolução SEDUC nº XX/2026", "Foco_Pedagogico": "Art. Xº, § 6º (Educação Especial): Sala de Recursos (AEE), PEI, Avaliação Diagnóstica Inicial e acessibilidade (PAEE)."},
-    ])
-
-if df_eventos.empty:
-    df_eventos = pd.DataFrame([
-        {"Data_Evento": "18/11/2026", "Pasta": "CONVIVA", "Nome_Evento": "Semana Escolar de Não Violência", "Acao_Obrigatoria": "Verificar ações preventivas com Direção/CGP e conformidade com Protocolo 179."},
-    ])
-
-if df_bloqueios.empty:
-    df_bloqueios = pd.DataFrame([
-        {"Data": "20/11/2026", "Tipo": "Feriado", "Descricao": "Feriado Nacional da Consciência Negra", "Pasta_Afetada": "Todas"},
-    ])
+df_pastas = consolidar_pastas(df_pastas_raw)
 
 # --- TRADUTOR INTELIGENTE DE PLANILHAS BRUTAS DO DRIVE ---
 def padronizar_planilha_bruta(df_raw):
@@ -90,7 +111,7 @@ def padronizar_planilha_bruta(df_raw):
             mapa[col] = "Plataforma_Critica"
     df_pad = df_raw.rename(columns=mapa).copy()
     for col_req, default_val in [
-        ("Escola", "Escola Não Identificada"), ("Etapa", "Todas"), ("Turma", "Geral"),
+        ("Escola", "EE Armindo Ramos"), ("Etapa", "Todas"), ("Turma", "Geral"),
         ("Estudante", "Verificar Lista"), ("Componente", "Todos"), ("Nivel", "Abaixo do Básico"),
         ("Frequencia", 75), ("Habilidade_Critica", "Prioritária da Semana"), ("Plataforma_Critica", "Abaixo da Meta")
     ]:
@@ -103,14 +124,14 @@ if "senhas_atualizadas" not in st.session_state:
     st.session_state["senhas_atualizadas"] = {}
 if "indicadores_ativos" not in st.session_state:
     st.session_state["indicadores_ativos"] = pd.DataFrame([
-        {"Escola": "EE Escola Estadual 01", "Etapa": "Ensino Médio", "Turma": "1ª Série A", "Estudante": "Ana Clara", "Componente": "Arte", "Nivel": "Abaixo do Básico", "Frequencia": 68, "Habilidade_Critica": "EM13AR01", "Plataforma_Critica": "Tarefa SP (38%)"},
-        {"Escola": "EE Escola Estadual 01", "Etapa": "Anos Finais", "Turma": "9º Ano B", "Estudante": "Lucas Oliveira", "Componente": "Matemática", "Nivel": "Abaixo do Básico", "Frequencia": 71, "Habilidade_Critica": "EF09MA06", "Plataforma_Critica": "Khan Academy (29%)"},
-        {"Escola": "EE Escola Estadual 02", "Etapa": "Ensino Médio", "Turma": "2ª Série C", "Estudante": "Pedro Henrique", "Componente": "Matemática", "Nivel": "Abaixo do Básico", "Frequencia": 64, "Habilidade_Critica": "EM13MAT301", "Plataforma_Critica": "Leia SP (32%)"},
-        {"Escola": "EE Escola Estadual 03", "Etapa": "Ensino Médio", "Turma": "3ª Série A", "Estudante": "Mariana Costa", "Componente": "Arte", "Nivel": "Adequado", "Frequencia": 94, "Habilidade_Critica": "Nenhuma", "Plataforma_Critica": "Adequado (85%)"},
+        {"Escola": "EE Armando Gonçalves Professor", "Etapa": "Ensino Médio", "Turma": "1ª Série A", "Estudante": "Ana Clara", "Componente": "Matematica", "Nivel": "Abaixo do Básico", "Frequencia": 68, "Habilidade_Critica": "EM13MAT301", "Plataforma_Critica": "Khan Academy (38%)"},
+        {"Escola": "EE Elvira Silva Professora", "Etapa": "Anos Iniciais", "Turma": "5º Ano B", "Estudante": "Lucas Oliveira", "Componente": "Anos Iniciais", "Nivel": "Abaixo do Básico", "Frequencia": 71, "Habilidade_Critica": "EF05LP01", "Plataforma_Critica": "Elefante Letrado (29%)"},
+        {"Escola": "EE Raposo Tavares", "Etapa": "Ensino Médio", "Turma": "2ª Série C", "Estudante": "Pedro Henrique", "Componente": "Língua Portuguesa", "Nivel": "Abaixo do Básico", "Frequencia": 64, "Habilidade_Critica": "EM13LP01", "Plataforma_Critica": "Leia SP (32%)"},
+        {"Escola": "EE Jeremias Junior Coronel", "Etapa": "Anos Finais", "Turma": "9º Ano A", "Estudante": "Mariana Costa", "Componente": "Artes", "Nivel": "Adequado", "Frequencia": 94, "Habilidade_Critica": "Nenhuma", "Plataforma_Critica": "Adequado (85%)"},
     ])
 if "cursistas_ativos" not in st.session_state:
     st.session_state["cursistas_ativos"] = pd.DataFrame([
-        {"Escola": "EE Escola Estadual 01", "Professor": "Prof. Roberto (Cursista)", "Componente": "Arte", "Etapa": "Ensino Médio", "Status": "Ativo - Baixa entrega"},
+        {"Escola": "EE Raposo Tavares", "Professor": "Prof. Roberto (Cursista)", "Componente": "Artes", "Etapa": "Ensino Médio", "Status": "Ativo - Baixa entrega"},
     ])
 if "boletins_pdf_texto" not in st.session_state:
     st.session_state["boletins_pdf_texto"] = ""
@@ -119,14 +140,10 @@ for chave in ["visitas", "encaminhamentos", "agenda_cec"]:
     if chave not in st.session_state:
         st.session_state[chave] = []
 
-# --- GERADOR DE LINK PARA GOOGLE AGENDA ---
 def gerar_link_google_agenda(titulo, data_obj, hora_inicio, hora_fim, local, descricao):
     dt_ini = f"{data_obj.strftime('%Y%m%d')}T{hora_inicio.replace(':', '')}00"
     dt_fim = f"{data_obj.strftime('%Y%m%d')}T{hora_fim.replace(':', '')}00"
-    params = {
-        "action": "TEMPLATE", "text": titulo, "dates": f"{dt_ini}/{dt_fim}",
-        "location": local, "details": descricao
-    }
+    params = {"action": "TEMPLATE", "text": titulo, "dates": f"{dt_ini}/{dt_fim}", "location": local, "details": descricao}
     return "https://calendar.google.com/calendar/render?" + urllib.parse.urlencode(params)
 
 # --- TELA DE LOGIN COM TROCA OBRIGATÓRIA DE SENHA PROVISÓRIA (123) ---
@@ -159,13 +176,17 @@ if "user" not in st.session_state:
 
     c1, c2 = st.columns([1, 1])
     with c1:
-        email_in = st.text_input("E-mail Institucional", placeholder="ex: cec@educacao.sp.gov.br ou joao.arte@educacao.sp.gov.br")
+        email_in = st.text_input("E-mail Institucional", placeholder="ex: marcos.yoshiwara@educacao.sp.gov.br")
         senha_in = st.text_input("Senha", type="password", placeholder="Primeiro acesso: 123")
         if st.button("Entrar no GPS", type="primary"):
             email_clean = email_in.strip().lower()
             senha_clean = senha_in.strip()
             df_usuarios["Email_Clean"] = df_usuarios["Email"].astype(str).str.strip().str.lower()
-            df_usuarios["Senha_Clean"] = df_usuarios["Senha"].astype(str).str.strip()
+            df_usuarios["Senha_Clean"] = (
+                df_usuarios["Senha"].fillna("123").astype(str).str.strip()
+                .str.replace(r"\.0$", "", regex=True)
+                .replace({"": "123", "nan": "123", "None": "123"})
+            )
             match = df_usuarios[df_usuarios["Email_Clean"] == email_clean]
 
             if not match.empty:
@@ -186,16 +207,33 @@ if "user" not in st.session_state:
     st.stop()
 
 user = st.session_state["user"]
-pasta_atual = user["Pasta"]
-info_pasta = df_pastas[df_pastas["Pasta"] == pasta_atual].iloc[0].to_dict() if pasta_atual in df_pastas["Pasta"].values else {"Resolucao": "Resolução SEDUC vigente", "Foco_Pedagogico": "Coordenação e Acompanhamento Pedagógico"}
+pasta_completa = str(user.get("Pasta", "CEC"))
+pasta_chave = mapear_pasta_chave(pasta_completa)
+
+match_pasta = df_pastas[df_pastas["Pasta_Chave"] == pasta_chave]
+if not match_pasta.empty:
+    info_pasta = match_pasta.iloc[0].to_dict()
+else:
+    info_pasta = {"Resolucao": "RESOLUÇÃO SEDUC Nº 1, DE 6 DE JANEIRO DE 2026", "Foco_Pedagogico": f"Coordenação e Acompanhamento Pedagógico ({pasta_completa})"}
 
 df_indicadores = st.session_state["indicadores_ativos"]
 df_cursistas = st.session_state["cursistas_ativos"]
 
+# --- FILTRO INTELIGENTE DAS ESCOLAS DO USUÁRIO ---
+col_escola_user = "Escola" if "Escola" in user else ("Escolas" if "Escolas" in user else None)
+escolas_user_raw = str(user.get(col_escola_user, "Todas")).strip() if col_escola_user else "Todas"
+
+escolas_base = sorted(df_indicadores["Escola"].unique().tolist())
+if escolas_user_raw.lower() not in ["todas", "nan", "none", ""]:
+    partes = [p.strip() for p in escolas_user_raw.replace(" e ", ";").split(";") if p.strip()]
+    escolas_disponiveis = sorted(list(set(partes)))
+else:
+    escolas_disponiveis = escolas_base
+
 # --- MENU LATERAL ---
 st.sidebar.title("🧭 GPS Pedagógico")
 st.sidebar.markdown(f"**Usuário:** {user['Nome']}")
-st.sidebar.info(f"**Perfil/Pasta:** {pasta_atual}\n\n**Componente:** {user['Componente']} | **Etapa:** {user['Etapa']}")
+st.sidebar.info(f"**Pasta:** {pasta_chave}\n\n**Frentes:** {pasta_completa}\n\n**Componente:** {user.get('Componente', 'Todos')} | **Etapa:** {user.get('Etapa', 'Todas')}")
 if st.sidebar.button("Sair"):
     del st.session_state["user"]
     st.rerun()
@@ -207,28 +245,25 @@ menu = st.sidebar.radio("Navegação", [
     "4. Painel CEC (Drive, Agendamentos & 1:1)"
 ])
 
-escolas_disponiveis = sorted(df_indicadores["Escola"].unique().tolist())
-if user["Etapa"] != "Todas" and pasta_atual != "CEC":
-    esc_etapa = df_indicadores[df_indicadores["Etapa"] == user["Etapa"]]["Escola"].unique().tolist()
-    if esc_etapa:
-        escolas_disponiveis = sorted(esc_etapa)
-
 # ==============================================================================
 # ABA 1: GPS SEMANAL
 # ==============================================================================
 if menu == "1. GPS Semanal (Intencionalidade)":
-    st.header(f"🧭 GPS Semanal — {pasta_atual}")
-    st.caption(f"**Fundamentação Legal:** {info_pasta['Resolucao']} | {info_pasta['Foco_Pedagogico']}")
+    st.header(f"🧭 GPS Semanal — {pasta_chave}")
+    st.caption(f"**Base Legal:** {info_pasta['Resolucao']}")
+    with st.expander("📜 Ver Atribuições Legais Completas desta Pasta (Resolução SEDUC nº 1/2026)", expanded=False):
+        st.text(info_pasta["Foco_Pedagogico"])
 
     if st.session_state["boletins_pdf_texto"]:
         with st.expander("📰 Destaques Extraídos do Boletim Semanal / Circular (Drive)", expanded=False):
             st.write(st.session_state["boletins_pdf_texto"][:1800] + "...")
 
-    ev_pasta = df_eventos[(df_eventos["Pasta"] == pasta_atual) | (df_eventos["Pasta"] == "Todas")]
-    for _, ev in ev_pasta.iterrows():
-        st.info(f"📅 **Alerta de Calendário Obrigatório ({ev['Data_Evento']}):** **{ev['Nome_Evento']}** — {ev['Acao_Obrigatoria']}")
+    if not df_eventos.empty and "Pasta" in df_eventos.columns:
+        ev_pasta = df_eventos[(df_eventos["Pasta"].apply(mapear_pasta_chave) == pasta_chave) | (df_eventos["Pasta"].astype(str).str.lower() == "todas")]
+        for _, ev in ev_pasta.iterrows():
+            st.info(f"📅 **Alerta de Calendário Obrigatório ({ev.get('Data_Evento', '')}):** **{ev.get('Nome_Evento', '')}** — {ev.get('Acao_Obrigatoria', '')}")
 
-    meus_comp = [c for c in st.session_state["agenda_cec"] if c["Destino"] in ["Toda a Equipe", pasta_atual, user["Nome"]]]
+    meus_comp = [c for c in st.session_state["agenda_cec"] if c["Destino"] in ["Toda a Equipe", pasta_chave, user["Nome"]]]
     if meus_comp:
         st.warning("📌 **Alinhamentos / Convocações Agendados pelo CEC na Sua Semana:**")
         for c in meus_comp:
@@ -236,22 +271,20 @@ if menu == "1. GPS Semanal (Intencionalidade)":
 
     escola_gps = st.selectbox("Selecione a Escola para visualizar a Intencionalidade da Semana:", escolas_disponiveis)
 
-    if pasta_atual == "MULTIPLICA":
-        curs_esc = df_cursistas[(df_cursistas["Escola"] == escola_gps) & (df_cursistas["Componente"] == user["Componente"])]
+    if pasta_chave == "MULTIPLICA":
+        curs_esc = df_cursistas[df_cursistas["Escola"].str.lower() == escola_gps.lower()]
         if not curs_esc.empty:
-            st.success(f"🎯 **INTENCIONALIDADE: ACOMPANHAMENTO FORMATIVO** — Escola com cursistas/multiplicadores ativos em **{user['Componente']}**.")
+            st.success(f"🎯 **INTENCIONALIDADE: ACOMPANHAMENTO FORMATIVO** — Escola com cursistas/multiplicadores ativos em **{user.get('Componente', '')}**.")
             st.dataframe(curs_esc, use_container_width=True)
         else:
-            st.warning(f"📢 **INTENCIONALIDADE: MOBILIZAÇÃO, DIVULGAÇÃO E APOIO OPERACIONAL** — Escola sem cursistas ativos em **{user['Componente']}** ({user['Etapa']}). Foco: alinhar divulgação com CGP/Direção e destravar adesão.")
+            st.warning(f"📢 **INTENCIONALIDADE: MOBILIZAÇÃO, DIVULGAÇÃO E APOIO OPERACIONAL** — Escola sem cursistas ativos mapeados em **{user.get('Componente', '')}**. Foco: alinhar divulgação com CGP/Direção e destravar adesão.")
 
-    dados_esc = df_indicadores[df_indicadores["Escola"] == escola_gps]
-    if user["Componente"] not in ["Todos", "Gestão"] and pasta_atual in ["DESENV_CURRICULAR", "RECOMPOSICAO"]:
-        dados_comp = dados_esc[dados_esc["Componente"] == user["Componente"]]
-        if not dados_comp.empty:
-            dados_esc = dados_comp
-
+    dados_esc = df_indicadores[df_indicadores["Escola"].str.lower() == escola_gps.lower()]
     st.subheader("🔍 Raio-X Cirúrgico: Turmas, Habilidades, Plataformas e Estudantes")
-    st.dataframe(dados_esc, use_container_width=True)
+    if dados_esc.empty:
+        st.info("Aguardando carregamento da planilha de indicadores desta unidade no Painel CEC (Aba 4).")
+    else:
+        st.dataframe(dados_esc, use_container_width=True)
 
 # ==============================================================================
 # ABA 2: PLANO DE TRABALHO, E-MAIL E GOOGLE AGENDA
@@ -282,26 +315,28 @@ elif menu == "2. Plano de Trabalho, E-mail & Agenda":
             publico_plano = st.text_input("Participantes / Boletim:", "Equipe Pedagógica / Convocação")
 
     data_str = data_plano.strftime("%d/%m/%Y")
-    bloq = df_bloqueios[(df_bloqueios["Data"].astype(str) == data_str) & ((df_bloqueios["Pasta_Afetada"] == "Todas") | (df_bloqueios["Pasta_Afetada"] == pasta_atual))]
-    if not bloq.empty and natureza_dia == "Visita Presencial à Escola":
-        st.error(f"🚫 **Atenção — Data Bloqueada ({bloq.iloc[0]['Tipo']}):** {bloq.iloc[0]['Descricao']}. Altere a Natureza da Atividade acima.")
+    if not df_bloqueios.empty and "Data" in df_bloqueios.columns:
+        bloq = df_bloqueios[(df_bloqueios["Data"].astype(str) == data_str) & ((df_bloqueios["Pasta_Afetada"].astype(str).str.lower() == "todas") | (df_bloqueios["Pasta_Afetada"].apply(mapear_pasta_chave) == pasta_chave))]
+        if not bloq.empty and natureza_dia == "Visita Presencial à Escola":
+            st.error(f"🚫 **Atenção — Data Bloqueada ({bloq.iloc[0]['Tipo']}):** {bloq.iloc[0]['Descricao']}. Altere a Natureza da Atividade acima.")
 
     if natureza_dia == "Visita Presencial à Escola":
-        dados_esc = df_indicadores[df_indicadores["Escola"] == local_plano]
-        alunos_crit = ", ".join(dados_esc[dados_esc["Nivel"] == "Abaixo do Básico"]["Estudante"].astype(str).tolist()) or "Estudantes em acompanhamento"
-        habs_crit = ", ".join(dados_esc["Habilidade_Critica"].astype(str).unique().tolist())
-        plats_crit = ", ".join(dados_esc["Plataforma_Critica"].astype(str).unique().tolist())
+        dados_esc = df_indicadores[df_indicadores["Escola"].str.lower() == local_plano.lower()]
+        alunos_crit = ", ".join(dados_esc[dados_esc["Nivel"] == "Abaixo do Básico"]["Estudante"].astype(str).tolist()) if not dados_esc.empty else "Estudantes prioritários da unidade"
+        habs_crit = ", ".join(dados_esc["Habilidade_Critica"].astype(str).unique().tolist()) if not dados_esc.empty else "Habilidades essenciais da semana"
+        plats_crit = ", ".join(dados_esc["Plataforma_Critica"].astype(str).unique().tolist()) if not dados_esc.empty else "Plataformas educacionais SEDUC"
+        primeira_linha_legal = info_pasta["Foco_Pedagogico"].split("\n")[0]
 
-        if pasta_atual == "MULTIPLICA":
-            curs_esc = df_cursistas[(df_cursistas["Escola"] == local_plano) & (df_cursistas["Componente"] == user["Componente"])]
+        if pasta_chave == "MULTIPLICA":
+            curs_esc = df_cursistas[df_cursistas["Escola"].str.lower() == local_plano.lower()]
             if not curs_esc.empty:
-                texto_auto = f"Intencionalidade Formativa ({info_pasta['Resolucao']} - {info_pasta['Foco_Pedagogico']}): Acompanhamento dos cursistas/multiplicadores de {user['Componente']} ({', '.join(curs_esc['Professor'].astype(str).tolist())}) e desdobramento em ATPC."
+                texto_auto = f"Intencionalidade Formativa ({info_pasta['Resolucao']} - {primeira_linha_legal}): Acompanhamento presencial dos cursistas/multiplicadores de {user.get('Componente', '')} e desdobramento em ATPC."
             else:
-                texto_auto = f"Intencionalidade de Mobilização e Apoio Operacional ({info_pasta['Resolucao']} - {info_pasta['Foco_Pedagogico']}): Divulgação do Programa Multiplica SP ({user['Componente']} - {user['Etapa']}) junto à equipe gestora e mapeamento de docentes elegíveis."
+                texto_auto = f"Intencionalidade de Mobilização e Apoio Operacional ({info_pasta['Resolucao']} - {primeira_linha_legal}): Divulgação do Programa Multiplica SP ({user.get('Componente', '')}) junto à equipe gestora e mapeamento de docentes elegíveis."
         else:
             texto_auto = (
-                f"Fundamentação: {info_pasta['Resolucao']} — {info_pasta['Foco_Pedagogico']} "
-                f"Foco da semana na unidade: Habilidades críticas ({habs_crit}); Plataformas ({plats_crit}); "
+                f"Fundamentação: {info_pasta['Resolucao']} — {primeira_linha_legal} "
+                f"Foco da semana na unidade ({pasta_completa}): Habilidades críticas ({habs_crit}); Plataformas ({plats_crit}); "
                 f"Estudantes prioritários: {alunos_crit}."
             )
     else:
@@ -311,8 +346,8 @@ elif menu == "2. Plano de Trabalho, E-mail & Agenda":
 
     doc = Document()
     doc.add_heading("PLANO DE TRABALHO SEMANAL — GPS PEDAGÓGICO", 0)
-    doc.add_paragraph(f"Especialista (PEC): {user['Nome']} | Pasta: {pasta_atual} ({user['Componente']} - {user['Etapa']})")
-    doc.add_paragraph(f"Resolução: {info_pasta['Resolucao']}")
+    doc.add_paragraph(f"Especialista (PEC): {user['Nome']} | Pasta: {pasta_chave} ({user.get('Componente', '')} - {user.get('Etapa', '')})")
+    doc.add_paragraph(f"Base Legal: {info_pasta['Resolucao']}")
     tab = doc.add_table(rows=2, cols=4)
     tab.style = "Table Grid"
     h = tab.rows[0].cells
@@ -327,7 +362,7 @@ elif menu == "2. Plano de Trabalho, E-mail & Agenda":
     doc.save(buf)
     bytes_doc = buf.getvalue()
 
-    link_gcal = gerar_link_google_agenda(f"GPS [{pasta_atual}] — {local_plano}", data_plano, hora_ini, hora_fim, local_plano, texto_final)
+    link_gcal = gerar_link_google_agenda(f"GPS [{pasta_chave}] — {local_plano}", data_plano, hora_ini, hora_fim, local_plano, texto_final)
 
     b1, b2, b3 = st.columns(3)
     with b1:
@@ -341,7 +376,7 @@ elif menu == "2. Plano de Trabalho, E-mail & Agenda":
             else:
                 try:
                     msg = EmailMessage()
-                    msg["Subject"] = f"📋 Plano de Trabalho GPS — {user['Nome']} ({pasta_atual}) | {data_str}"
+                    msg["Subject"] = f"📋 Plano de Trabalho GPS — {user['Nome']} ({pasta_chave}) | {data_str}"
                     msg["From"] = EMAIL_DISPARADOR
                     msg["To"] = f"{user['Email']}, {EMAIL_DIRIGENTE}"
                     msg["Cc"] = EMAIL_CEC
@@ -400,7 +435,7 @@ elif menu == "3. Roteiro de Visita, Protocolo 179 & Repasse":
 
     st.subheader("📤 Encaminhamento / Passar Bastão para Outra Pasta")
     desc_enc = st.text_input("Descreva o encaminhamento acordado com a escola ou repassado a outro especialista:")
-    lista_pecs = [f"{r['Nome']} ({r['Pasta']} - {r['Componente']})" for _, r in df_usuarios.iterrows() if r["Pasta"] != "CEC"]
+    lista_pecs = [f"{r['Nome']} ({mapear_pasta_chave(r['Pasta'])} - {r['Componente']})" for _, r in df_usuarios.iterrows() if mapear_pasta_chave(r["Pasta"]) not in ["CEC", "AT"]]
     dest_enc = st.selectbox("Responsável pelo acompanhamento no próximo ciclo:", ["Manter comigo (Próxima visita)"] + lista_pecs)
 
     if st.button("Salvar Registro Completo da Visita", type="primary"):
@@ -409,17 +444,17 @@ elif menu == "3. Roteiro de Visita, Protocolo 179 & Repasse":
             st.warning("⚠️ Alerta do GPS: Itens de atendimento focalizado aos estudantes críticos (Aula / CGP) não foram marcados. Isso será sinalizado no acompanhamento.")
         if desc_enc:
             st.session_state["encaminhamentos"].append({
-                "Escola": esc_vis, "Origem": user["Nome"], "Pasta_Origem": pasta_atual,
+                "Escola": esc_vis, "Origem": user["Nome"], "Pasta_Origem": pasta_chave,
                 "Destino": dest_enc, "Descricao": desc_enc, "Status": "Pendente"
             })
         st.session_state["visitas"].append({
             "Data": datetime.today().strftime("%d/%m/%Y"), "PEC": user["Nome"],
-            "Pasta": pasta_atual, "Escola": esc_vis, "Prioridade_OK": prioridade_ok
+            "Pasta": pasta_chave, "Escola": esc_vis, "Prioridade_OK": prioridade_ok
         })
         st.success("✅ Registro da visita salvo com sucesso!")
 
 # ==============================================================================
-# ABA 4: PAINEL DO CEC (DRIVE, AGENDAMENTOS E GESTÃO DE SENHAS)
+# ABA 4: PAINEL DO CEC (CARREGAR ARQUIVOS DO DRIVE, AGENDAR E GESTÃO DE SENHAS)
 # ==============================================================================
 elif menu == "4. Painel CEC (Drive, Agendamentos & 1:1)":
     st.header("🎛️ Painel do CEC — Atualização Semanal, Agendamentos e Pauta 1:1")
@@ -463,9 +498,9 @@ elif menu == "4. Painel CEC (Drive, Agendamentos & 1:1)":
     with ca2:
         hor_ag = st.text_input("Horário (ex: 09:00 às 11:00):", "09:00 às 11:00")
         if tipo_ag == "Alinhamento Individual (1:1)":
-            dest_ag = st.selectbox("Selecione o PEC:", df_usuarios[df_usuarios["Pasta"] != "CEC"]["Nome"].tolist())
+            dest_ag = st.selectbox("Selecione o PEC:", df_usuarios[~df_usuarios["Pasta"].isin(["CEC", "AT"])]["Nome"].tolist())
         elif tipo_ag == "Alinhamento por Pasta":
-            dest_ag = st.selectbox("Selecione a Pasta:", df_pastas["Pasta"].tolist())
+            dest_ag = st.selectbox("Selecione a Pasta:", ["CONVIVA", "QUALIDADE DA AULA", "DESENVOLVIMENTO CURRICULAR", "MULTIPLICA", "EDUCACAO ESPECIAL", "RECOMPOSICAO"])
         else:
             dest_ag = "Toda a Equipe"
     with ca3:
@@ -481,11 +516,11 @@ elif menu == "4. Painel CEC (Drive, Agendamentos & 1:1)":
 
         if disparar_email_ag and "COLE_AQUI" not in SENHA_APP_GMAIL:
             if dest_ag == "Toda a Equipe":
-                emails_dest = df_usuarios[df_usuarios["Pasta"] != "CEC"]["Email"].tolist()
-            elif dest_ag in df_pastas["Pasta"].values:
-                emails_dest = df_usuarios[df_usuarios["Pasta"] == dest_ag]["Email"].tolist()
+                emails_dest = df_usuarios["Email"].dropna().tolist()
+            elif dest_ag in ["CONVIVA", "QUALIDADE DA AULA", "DESENVOLVIMENTO CURRICULAR", "MULTIPLICA", "EDUCACAO ESPECIAL", "RECOMPOSICAO"]:
+                emails_dest = df_usuarios[df_usuarios["Pasta"].apply(mapear_pasta_chave) == dest_ag]["Email"].dropna().tolist()
             else:
-                emails_dest = df_usuarios[df_usuarios["Nome"] == dest_ag]["Email"].tolist()
+                emails_dest = df_usuarios[df_usuarios["Nome"] == dest_ag]["Email"].dropna().tolist()
             try:
                 msg = EmailMessage()
                 msg["Subject"] = f"📅 Convocação / Alinhamento CEC — {assunto_ag} ({data_ag.strftime('%d/%m/%Y')})"
@@ -503,7 +538,7 @@ elif menu == "4. Painel CEC (Drive, Agendamentos & 1:1)":
     st.subheader("🔑 3. Gestão de Senhas (Resetar para 123) & Pauta 1:1")
     col_s1, col_s2 = st.columns(2)
     with col_s1:
-        pec_reset = st.selectbox("Resetar senha de um PEC para provisória (123):", df_usuarios[df_usuarios["Pasta"] != "CEC"]["Email"].tolist())
+        pec_reset = st.selectbox("Resetar senha de um PEC para provisória (123):", df_usuarios["Email"].dropna().tolist())
         if st.button("Resetar Senha para 123"):
             st.session_state["senhas_atualizadas"][pec_reset.strip().lower()] = "123"
             st.success(f"Senha de {pec_reset} redefinida para `123`.")
