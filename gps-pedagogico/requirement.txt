@@ -1,0 +1,7 @@
+Plaintext
+streamlit
+pandas
+plotly
+openpyxl
+pypdf
+python-docx
