@@ -473,34 +473,46 @@ TAREFAS_POR_PASTA = {
         "Acompanhar cronograma de formações, convocações e indicadores da URE"
     ]
 }
-# ==============================================================================
-# INTERFACE VISUAL, AUTENTICAÇÃO E PAINEL PEDAGÓGICO (URE MIRACATU)
-# ==============================================================================
 
-def gerar_docx_plano(nome_pec, pasta_pec, escola_sel, semana_str, tarefas_sel, obs_texto):
+# ==============================================================================
+# FUNÇÕES DE EXPORTAÇÃO (.DOCX) E DISPARO DE E-MAIL
+# ==============================================================================
+def gerar_docx_plano(nome_pec, email_pec, pasta_pec, comp_pec, escola_sel, semana_str, cronograma_dias, obs_texto):
     doc = Document()
-    titulo = doc.add_heading("GPS — Guia Pedagógico Semanal (URE Miracatu)", level=1)
+    titulo = doc.add_heading("GPS — GUIA PEDAGÓGICO SEMANAL", level=1)
     titulo.alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+    sub = doc.add_paragraph("Unidade Regional de Ensino de Miracatu — Equipe de Especialistas em Currículo (EEC)")
+    sub.alignment = WD_ALIGN_PARAGRAPH.CENTER
 
     p_info = doc.add_paragraph()
     p_info.add_run("Especialista / Responsável: ").bold = True
-    p_info.add_run(f"{nome_pec}\n")
-    p_info.add_run("Pasta / Eixo: ").bold = True
-    p_info.add_run(f"{pasta_pec}\n")
+    p_info.add_run(f"{nome_pec} ({email_pec})\n")
+    p_info.add_run("Pasta / Eixo de Atuação: ").bold = True
+    p_info.add_run(f"{pasta_pec} — Componente: {comp_pec}\n")
     p_info.add_run("Unidade Escolar Prioritária: ").bold = True
     p_info.add_run(f"{escola_sel}\n")
     p_info.add_run("Período / Semana: ").bold = True
     p_info.add_run(f"{semana_str}\n")
 
-    doc.add_heading("Ações e Encaminhamentos Planejados", level=2)
-    if tarefas_sel:
-        for t in tarefas_sel:
-            doc.add_paragraph(t, style="List Bullet")
-    else:
-        doc.add_paragraph("Nenhuma ação selecionada.")
+    doc.add_heading("1. Cronograma Semanal de Ações e Visitas", level=2)
+    tabela = doc.add_table(rows=1, cols=4)
+    tabela.style = "Table Grid"
+    hdr = tabela.rows[0].cells
+    hdr[0].text = "Dia / Turno"
+    hdr[1].text = "Local / Escola"
+    hdr[2].text = "Ação Pedagógica (Resolução SEDUC 01/2026)"
+    hdr[3].text = "Público-Alvo / Encaminhamento"
+
+    for item in cronograma_dias:
+        row_cells = tabela.add_row().cells
+        row_cells[0].text = item.get("dia", "")
+        row_cells[1].text = item.get("local", "")
+        row_cells[2].text = item.get("acao", "")
+        row_cells[3].text = item.get("publico", "")
 
     if obs_texto.strip():
-        doc.add_heading("Observações e Devolutivas Formativas", level=2)
+        doc.add_heading("2. Pautas Formativas, Diagnóstico e Devolutivas", level=2)
         doc.add_paragraph(obs_texto.strip())
 
     buf = BytesIO()
@@ -508,12 +520,38 @@ def gerar_docx_plano(nome_pec, pasta_pec, escola_sel, semana_str, tarefas_sel, o
     buf.seek(0)
     return buf
 
-# --- CONTROLE DE SESSÃO / LOGIN ---
+def enviar_email_gps(destinatarios, assunto, corpo_texto, anexo_bytes, nome_anexo):
+    if "COLE_AQUI" in SENHA_APP_GMAIL or "seu.email" in EMAIL_DISPARADOR:
+        return False, "Configure EMAIL_DISPARADOR e SENHA_APP_GMAIL no código ou Secrets para habilitar o envio automático."
+    try:
+        msg = EmailMessage()
+        msg["Subject"] = assunto
+        msg["From"] = EMAIL_DISPARADOR
+        msg["To"] = ", ".join(destinatarios)
+        msg.set_content(corpo_texto)
+        msg.add_attachment(
+            anexo_bytes.getvalue(),
+            maintype="application",
+            subtype="vnd.openxmlformats-officedocument.wordprocessingml.document",
+            filename=nome_anexo
+        )
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
+            smtp.login(EMAIL_DISPARADOR, SENHA_APP_GMAIL)
+            smtp.send_message(msg)
+        return True, "Plano enviado com sucesso!"
+    except Exception as e:
+        return False, f"Falha no envio do e-mail: {e}"
+
+# ==============================================================================
+# AUTENTICAÇÃO E SESSÃO
+# ==============================================================================
 if "autenticado" not in st.session_state:
     st.session_state["autenticado"] = False
     st.session_state["usuario_nome"] = ""
+    st.session_state["usuario_email"] = ""
     st.session_state["usuario_pasta"] = "QUALIDADE DA AULA"
     st.session_state["usuario_componente"] = "Todos"
+    st.session_state["cronograma_semana"] = []
 
 if not st.session_state["autenticado"]:
     st.title("🧭 GPS — Guia Pedagógico Semanal")
@@ -523,22 +561,23 @@ if not st.session_state["autenticado"]:
     col_esq, col_centro, col_dir = st.columns([1, 2, 1])
     with col_centro:
         with st.form("form_login_gps"):
-            st.markdown("### Acesso ao Sistema")
+            st.markdown("### Acesso da Equipe de Especialistas (EEC / CEC / AT)")
             email_in = st.text_input("E-mail Institucional (@educacao.sp.gov.br ou @prof.educacao.sp.gov.br)")
             senha_in = st.text_input("Senha / Código de Acesso", type="password")
             pasta_fallback = st.selectbox(
-                "Pasta / Função (caso não esteja na planilha de usuários):",
+                "Pasta / Função (usado se não estiver cadastrado na aba Usuarios):",
                 list(TAREFAS_POR_PASTA.keys())
             )
-            entrar = st.form_submit_button("Entrar no GPS", use_container_width=True)
+            entrar = st.form_submit_button("Entrar no Sistema GPS", use_container_width=True)
 
             if entrar:
                 if not email_in.strip():
-                    st.error("Informe seu e-mail institucional.")
+                    st.error("Por favor, informe seu e-mail institucional.")
                 else:
                     nome_encontrado = email_in.split("@")[0].replace(".", " ").title()
                     pasta_encontrada = pasta_fallback
                     comp_encontrado = "Todos"
+                    acesso_ok = True
 
                     if not df_usuarios.empty:
                         cols_u = {normalizar_texto(c): c for c in df_usuarios.columns}
@@ -546,96 +585,208 @@ if not st.session_state["autenticado"]:
                         col_nome = next((v for k, v in cols_u.items() if "NOME" in k), None)
                         col_pasta = next((v for k, v in cols_u.items() if "PASTA" in k or "FUNCAO" in k), None)
                         col_comp = next((v for k, v in cols_u.items() if "COMPONENTE" in k), None)
+                        col_senha = next((v for k, v in cols_u.items() if "SENHA" in k or "PIN" in k), None)
 
                         if col_email:
                             match = df_usuarios[df_usuarios[col_email].astype(str).str.strip().str.lower() == email_in.strip().lower()]
                             if not match.empty:
                                 row_u = match.iloc[0]
-                                if col_nome and pd.notna(row_u[col_nome]):
-                                    nome_encontrado = str(row_u[col_nome]).strip()
-                                if col_pasta and pd.notna(row_u[col_pasta]):
-                                    pasta_encontrada = mapear_pasta_chave(row_u[col_pasta]) or pasta_fallback
-                                if col_comp and pd.notna(row_u[col_comp]):
-                                    comp_encontrado = str(row_u[col_comp]).strip()
+                                if col_senha and pd.notna(row_u[col_senha]) and str(row_u[col_senha]).strip() != "":
+                                    if senha_in.strip() != str(row_u[col_senha]).strip():
+                                        acesso_ok = False
+                                        st.error("Senha incorreta para este usuário.")
+                                if acesso_ok:
+                                    if col_nome and pd.notna(row_u[col_nome]):
+                                        nome_encontrado = str(row_u[col_nome]).strip()
+                                    if col_pasta and pd.notna(row_u[col_pasta]):
+                                        pasta_encontrada = mapear_pasta_chave(row_u[col_pasta]) or pasta_fallback
+                                    if col_comp and pd.notna(row_u[col_comp]):
+                                        comp_encontrado = str(row_u[col_comp]).strip()
 
-                    st.session_state["autenticado"] = True
-                    st.session_state["usuario_nome"] = nome_encontrado
-                    st.session_state["usuario_email"] = email_in.strip()
-                    st.session_state["usuario_pasta"] = pasta_encontrada if pasta_encontrada in TAREFAS_POR_PASTA else pasta_fallback
-                    st.session_state["usuario_componente"] = comp_encontrado
-                    st.rerun()
+                    if acesso_ok:
+                        st.session_state["autenticado"] = True
+                        st.session_state["usuario_nome"] = nome_encontrado
+                        st.session_state["usuario_email"] = email_in.strip()
+                        st.session_state["usuario_pasta"] = pasta_encontrada if pasta_encontrada in TAREFAS_POR_PASTA else pasta_fallback
+                        st.session_state["usuario_componente"] = comp_encontrado
+                        st.rerun()
     st.stop()
 
-# --- PAINEL PRINCIPAL AUTENTICADO ---
+# ==============================================================================
+# PAINEL PRINCIPAL DO SISTEMA GPS
+# ==============================================================================
 with st.sidebar:
     st.markdown("## 🧭 GPS — URE Miracatu")
-    st.write(f"**Usuário:** {st.session_state['usuario_nome']}")
+    st.write(f"**Especialista:** {st.session_state['usuario_nome']}")
     st.write(f"**Pasta:** {st.session_state['usuario_pasta']}")
+    st.write(f"**Componente:** {st.session_state['usuario_componente']}")
     st.markdown("---")
-    if st.button("Sair / Trocar Usuário", use_container_width=True):
+    if st.button("🔄 Atualizar Dados das Planilhas", use_container_width=True):
+        st.cache_data.clear()
+        st.rerun()
+    if st.button("🚪 Sair / Trocar Usuário", use_container_width=True):
         st.session_state["autenticado"] = False
         st.rerun()
 
 st.title("🧭 GPS — Guia Pedagógico Semanal")
-st.caption("Planejamento, Acompanhamento Escolar e Alinhamento Regional — URE Miracatu")
+st.caption("Planejamento, Acompanhamento Escolar e Alinhamento Regional — URE de Miracatu")
 
 aba_plano, aba_agenda, aba_indicadores, aba_normativas = st.tabs([
-    "📋 Plano Semanal",
-    "📅 Agenda SEDUC & URE",
-    "📊 Indicadores & Drive",
-    "📚 Diretrizes das Pastas"
+    "📋 Plano Semanal & Exportação",
+    "📅 Agenda SEDUC, CEC & Feriados",
+    "📊 Indicadores & Google Drive",
+    "📚 Diretrizes das Pastas (Res. SEDUC 01/2026)"
 ])
 
+# --- ABA 1: PLANO SEMANAL ---
 with aba_plano:
     st.subheader("Elaboração do Guia Pedagógico Semanal")
     col1, col2 = st.columns(2)
     with col1:
-        escola_sel = st.selectbox("Unidade Escolar Prioritária:", ESCOLAS_URE_MIRACATU)
+        escola_prioritaria = st.selectbox("Unidade Escolar Prioritária da Semana:", ESCOLAS_URE_MIRACATU)
     with col2:
-        semana_str = st.text_input("Período / Semana:", value=datetime.now().strftime("Semana de %d/%m/%Y"))
+        semana_ref = st.text_input("Período / Semana de Referência:", value=datetime.now().strftime("Semana de %d/%m/%Y"))
 
     pasta_atual = st.session_state["usuario_pasta"]
-    tarefas_sugeridas = TAREFAS_POR_PASTA.get(pasta_atual, [])
-    tarefas_sel = st.multiselect(
-        f"Ações da Pasta ({pasta_atual}):",
-        options=tarefas_sugeridas,
-        default=tarefas_sugeridas[:2]
-    )
-    obs_texto = st.text_area("Observações, pautas formativas e encaminhamentos:", height=120)
+    tarefas_pasta = TAREFAS_POR_PASTA.get(pasta_atual, [])
 
-    docx_buffer = gerar_docx_plano(
+    st.markdown("#### Adicionar Atividade ao Cronograma da Semana")
+    with st.form("form_add_atividade", clear_on_submit=True):
+        c_dia, c_loc = st.columns(2)
+        with c_dia:
+            dia_turno = st.selectbox("Dia da Semana / Turno:", [
+                "Segunda-feira (Manhã)", "Segunda-feira (Tarde)",
+                "Terça-feira (Manhã)", "Terça-feira (Tarde)",
+                "Quarta-feira (Manhã)", "Quarta-feira (Tarde)",
+                "Quinta-feira (Manhã)", "Quinta-feira (Tarde)",
+                "Sexta-feira (Manhã)", "Sexta-feira (Tarde)"
+            ])
+        with c_loc:
+            local_acao = st.selectbox("Local / Escola:", ["Sede URE Miracatu / Trabalho Interno", "Reunião Virtual / EFAPE / SEDUC"] + ESCOLAS_URE_MIRACATU)
+
+        acao_escolhida = st.selectbox("Ação Pedagógica da Pasta:", tarefas_pasta + ["Outra ação específica (descrever abaixo)"])
+        publico_enc = st.text_input("Público-Alvo / Detalhamento da Ação:", placeholder="Ex.: CGP/CGPG, Professores de Matemática, Estudantes Abaixo do Básico...")
+        add_btn = st.form_submit_button("➕ Inserir no Cronograma")
+
+        if add_btn:
+            st.session_state["cronograma_semana"].append({
+                "dia": dia_turno,
+                "local": local_acao,
+                "acao": acao_escolhida,
+                "publico": publico_enc if publico_enc.strip() else "Equipe Gestora / Docentes"
+            })
+            st.success("Atividade adicionada ao cronograma!")
+
+    if st.session_state["cronograma_semana"]:
+        df_cron = pd.DataFrame(st.session_state["cronograma_semana"])
+        st.dataframe(df_cron, use_container_width=True)
+        if st.button("🗑️ Limpar Cronograma da Semana"):
+            st.session_state["cronograma_semana"] = []
+            st.rerun()
+    else:
+        st.info("Nenhuma atividade inserida ainda. Use o formulário acima para montar os dias da semana.")
+
+    obs_texto = st.text_area("Pautas Formativas, Diagnóstico de Indicadores e Encaminhamentos:", height=120)
+
+    st.markdown("---")
+    docx_buf = gerar_docx_plano(
         st.session_state["usuario_nome"],
+        st.session_state["usuario_email"],
         pasta_atual,
-        escola_sel,
-        semana_str,
-        tarefas_sel,
+        st.session_state["usuario_componente"],
+        escola_prioritaria,
+        semana_ref,
+        st.session_state["cronograma_semana"],
         obs_texto
     )
-    st.download_button(
-        label="⬇️ Baixar Plano Semanal (.docx)",
-        data=docx_buffer,
-        file_name=f"GPS_{pasta_atual.replace(' ', '_')}_{datetime.now().strftime('%Y%m%d')}.docx",
-        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-    )
+    nome_arq_docx = f"GPS_{pasta_atual.replace(' ', '_')}_{datetime.now().strftime('%Y%m%d')}.docx"
 
+    col_dl, col_em = st.columns(2)
+    with col_dl:
+        st.download_button(
+            label="⬇️ Baixar Guia Pedagógico Semanal (.docx)",
+            data=docx_buf,
+            file_name=nome_arq_docx,
+            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            use_container_width=True
+        )
+    with col_em:
+        if st.button("📧 Enviar Plano por E-mail para CEC / Dirigente", use_container_width=True):
+            ok, msg_envio = enviar_email_gps(
+                [EMAIL_CEC, EMAIL_DIRIGENTE],
+                f"[GPS URE Miracatu] {pasta_atual} — {st.session_state['usuario_nome']} ({semana_ref})",
+                f"Segue em anexo o Guia Pedagógico Semanal de {st.session_state['usuario_nome']} ({pasta_atual}).",
+                docx_buf,
+                nome_arq_docx
+            )
+            if ok:
+                st.success(msg_envio)
+            else:
+                st.warning(msg_envio)
+
+# --- ABA 2: AGENDA SEDUC, CEC & FERIADOS ---
 with aba_agenda:
-    st.subheader("Agenda SEDUC / EEC e Compromissos")
+    st.subheader("Agenda Integrada — SEDUC/EEC, Google Agenda e Bloqueios")
+
+    col_m, col_a = st.columns(2)
+    with col_m:
+        mes_sel = st.selectbox("Mês:", list(range(1, 13)), index=datetime.now().month - 1)
+    with col_a:
+        ano_sel = st.number_input("Ano:", min_value=2025, max_value=2030, value=datetime.now().year)
+
+    feriados_sp = holidays.country_holidays("BR", subdiv="SP", years=[ano_sel])
+    feriados_mes = [{"Data": d.strftime("%d/%m/%Y"), "Feriado / Ponto Facultativo": nome} for d, nome in sorted(feriados_sp.items()) if d.month == mes_sel]
+    if feriados_mes:
+        st.markdown("**Feriados Oficiais (SP) no Mês:**")
+        st.dataframe(pd.DataFrame(feriados_mes), use_container_width=True)
+
+    if not df_bloqueios.empty:
+        st.markdown("**Bloqueios de Agenda / Convocações URE:**")
+        st.dataframe(df_bloqueios, use_container_width=True)
+
+    eventos_gcal = carregar_eventos_gcal(URL_GOOGLE_AGENDA_CEC)
+    eventos_gcal_mes = [e for e in eventos_gcal if e["ano"] == ano_sel and e["mes"] == mes_sel]
+    if eventos_gcal_mes:
+        st.markdown("**Compromissos Google Agenda CEC:**")
+        st.dataframe(pd.DataFrame(eventos_gcal_mes)[["data_str", "horario", "resumo", "local"]], use_container_width=True)
+
+    st.markdown("**Agenda SEDUC / EEC (Filtrada para sua Pasta):**")
     if df_agenda_seduc.empty:
-        st.info("Nenhum evento carregado da planilha da Agenda SEDUC no momento.")
+        st.info("Nenhum registro carregado da planilha da Agenda SEDUC.")
     else:
         st.dataframe(df_agenda_seduc, use_container_width=True)
 
+# --- ABA 3: INDICADORES & GOOGLE DRIVE ---
 with aba_indicadores:
-    st.subheader("Sincronização de Indicadores (Google Drive)")
-    st.markdown(f"[Abrir Pasta do Drive GPS]({URL_PASTA_DRIVE_GPS})")
-    if "COLE_AQUI" in GOOGLE_DRIVE_API_KEY:
-        st.warning("Configure a variável GOOGLE_DRIVE_API_KEY no app.py ou nos Secrets do Streamlit para sincronizar arquivos automaticamente.")
-    else:
-        df_ind, df_curs, textos_pdf, qtd = sincronizar_pasta_drive_automatico(ID_PASTA_DRIVE_GPS, GOOGLE_DRIVE_API_KEY)
-        st.success(f"{qtd} arquivo(s) sincronizado(s) da pasta do Drive.")
-        if not df_ind.empty:
-            st.dataframe(df_ind, use_container_width=True)
+    st.subheader("Análise de Indicadores e Matrizes BI SEDUC (Google Drive)")
+    st.markdown(f"📂 [Abrir Pasta Oficial do Drive GPS]({URL_PASTA_DRIVE_GPS})")
 
+    col_drv, col_up = st.columns(2)
+    with col_drv:
+        st.markdown("#### 1. Sincronização Automática (Google Drive)")
+        if "COLE_AQUI" in GOOGLE_DRIVE_API_KEY:
+            st.warning("Chave `GOOGLE_DRIVE_API_KEY` ainda não preenchida. Use o upload manual ao lado ou configure a chave no código.")
+        else:
+            df_ind, df_curs, textos_pdf, qtd = sincronizar_pasta_drive_automatico(ID_PASTA_DRIVE_GPS, GOOGLE_DRIVE_API_KEY)
+            st.success(f"{qtd} arquivo(s) lido(s) automaticamente da pasta do Drive.")
+            if not df_ind.empty:
+                escola_filtro = st.selectbox("Filtrar Indicadores por Escola:", ["Todas"] + sorted(df_ind["Escola"].unique().tolist()))
+                df_exibir = df_ind if escola_filtro == "Todas" else df_ind[df_ind["Escola"] == escola_filtro]
+                st.dataframe(df_exibir, use_container_width=True)
+
+    with col_up:
+        st.markdown("#### 2. Leitura Rápida de Planilha do BI (.xlsx / .csv)")
+        arquivo_bi = st.file_uploader("Envie uma planilha exportada do BI SEDUC (Prova Paulista, Frequência, etc.):", type=["xlsx", "csv"])
+        if arquivo_bi is not None:
+            df_raw_up = pd.read_csv(arquivo_bi) if arquivo_bi.name.endswith(".csv") else pd.read_excel(arquivo_bi)
+            df_pad_up = padronizar_planilha_bruta(df_raw_up, arquivo_bi.name)
+            if not df_pad_up.empty:
+                st.success(f"Planilha padronizada com {len(df_pad_up)} registros!")
+                st.dataframe(df_pad_up, use_container_width=True)
+            else:
+                st.dataframe(df_raw_up, use_container_width=True)
+
+# --- ABA 4: DIRETRIZES DAS PASTAS ---
 with aba_normativas:
-    st.subheader("Base Legal e Foco Pedagógico por Pasta")
+    st.subheader("Base Legal e Foco Pedagógico por Pasta (Resolução SEDUC Nº 01/2026)")
     st.dataframe(df_pastas, use_container_width=True)
