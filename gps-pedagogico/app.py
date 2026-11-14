@@ -649,778 +649,118 @@ if "user" not in st.session_state:
                 st.rerun()
         st.stop()
 
-    c1, c2 = st.columns([1, 1])
-    with c1:
-        email_in = st.text_input("E-mail Institucional", placeholder="ex: marcos.yoshiwara@educacao.sp.gov.br")
-        senha_in = st.text_input("Senha", type="password", placeholder="Primeiro acesso: 123")
-        if st.button("Entrar no GPS", type="primary"):
+    col1, _ = st.columns([1, 2])
+    with col1:
+        email_in = st.text_input("E-mail Institucional:")
+        senha_in = st.text_input("Senha:", type="password")
+        if st.button("Entrar no Sistema", type="primary"):
             if df_usuarios.empty:
-                st.error("Não foi possível ler a aba Usuarios. Verifique se a planilha do Google Sheets está compartilhada como 'Qualquer pessoa com o link'.")
+                st.error("Erro ao ler a aba 'Usuarios'. Verifique a conexão.")
             else:
-                email_clean = email_in.strip().lower()
-                senha_clean = senha_in.strip()
-                df_usuarios["Email_Clean"] = df_usuarios["Email"].astype(str).str.strip().str.lower()
-                df_usuarios["Senha_Clean"] = (
-                    df_usuarios["Senha"].fillna("123").astype(str).str.strip()
-                    .str.replace(r"\.0$", "", regex=True)
-                    .replace({"": "123", "nan": "123", "None": "123"})
-                )
-                match = df_usuarios[df_usuarios["Email_Clean"] == email_clean]
+                em_clean = email_in.strip().lower()
+                sn_clean = senha_in.strip()
+                user_match = df_usuarios[df_usuarios["Email"].str.strip().str.lower() == em_clean]
+                if not user_match.empty:
+                    u_row = user_match.iloc[0].to_dict()
+                    em_key = str(u_row.get("Email", "")).strip()
+                    senha_planilha = str(u_row.get("Senha", "")).strip()
+                    senha_efetiva = st.session_state["senhas_atualizadas"].get(em_key, senha_planilha)
 
-                if not match.empty:
-                    u_dict = match.iloc[0].to_dict()
-                    senha_real = st.session_state["senhas_atualizadas"].get(email_clean, u_dict["Senha_Clean"])
-                    if senha_clean == senha_real:
-                        if senha_real == "123":
-                            u_dict["Email"] = email_clean
-                            st.session_state["usuario_troca_senha"] = u_dict
+                    if sn_clean == senha_efetiva:
+                        if sn_clean == "123":
+                            st.session_state["usuario_troca_senha"] = u_row
                             st.rerun()
                         else:
-                            st.session_state["user"] = u_dict
+                            st.session_state["user"] = u_row
                             st.rerun()
                     else:
                         st.error("Senha incorreta.")
                 else:
-                    st.error("E-mail não cadastrado na aba Usuarios.")
+                    st.error("E-mail não cadastrado na aba 'Usuarios'.")
     st.stop()
 
+# --- PAINEL PRINCIPAL ---
 user = st.session_state["user"]
-pasta_completa = str(user.get("Pasta", "CEC"))
-pasta_chave = mapear_pasta_chave(pasta_completa)
+nome_user = str(user.get("Nome", "Especialista"))
+cargo_user = str(user.get("Cargo", "PEC")).strip().upper()
+pasta_bruta_user = str(user.get("Pasta", "GERAL"))
+pasta_user = mapear_pasta_chave(pasta_bruta_user)
+comp_user = str(user.get("Componente", "Todos")).strip()
+escolas_raw = str(user.get("Escolas_Atribuidas", "TODAS")).strip()
 
-match_pasta = df_pastas[df_pastas["Pasta_Chave"] == pasta_chave]
-if not match_pasta.empty:
-    info_pasta = match_pasta.iloc[0].to_dict()
+if normalizar_texto(escolas_raw) == "TODAS" or cargo_user in ["CEC", "AT"] or pasta_user == "DESENVOLVIMENTO CURRICULAR":
+    escolas_pec = ESCOLAS_URE_MIRACATU
 else:
-    info_pasta = {"Resolucao": "RESOLUÇÃO SEDUC Nº 1, DE 6 DE JANEIRO DE 2026", "Foco_Pedagogico": f"Coordenação e Acompanhamento Pedagógico ({pasta_completa})"}
+    lista_bruta = [e.strip() for e in escolas_raw.split(",") if e.strip()]
+    escolas_pec = []
+    for e_b in lista_bruta:
+        encontrada = next((of for of in ESCOLAS_URE_MIRACATU if normalizar_texto(e_b) in normalizar_texto(of)), e_b)
+        escolas_pec.append(encontrada)
+    if not escolas_pec:
+        escolas_pec = ESCOLAS_URE_MIRACATU
 
-df_indicadores = st.session_state["indicadores_ativos"]
-df_cursistas = st.session_state["cursistas_ativos"]
-
-# --- FILTRO INTELIGENTE DAS ESCOLAS DO USUÁRIO (GARANTINDO AS 30 ESCOLAS DA URE) ---
-col_escola_user = "Escola" if "Escola" in user else ("Escolas" if "Escolas" in user else None)
-escolas_user_raw = str(user.get(col_escola_user, "Todas")).strip() if col_escola_user else "Todas"
-
-todas_escolas_unificadas = sorted(list(set(ESCOLAS_URE_MIRACATU + df_indicadores["Escola"].dropna().unique().tolist())))
-if escolas_user_raw.lower() not in ["todas", "nan", "none", ""]:
-    partes = [p.strip() for p in escolas_user_raw.replace(" e ", ";").split(";") if p.strip()]
-    escolas_disponiveis = sorted(list(set(partes)))
+info_pasta = df_pastas[df_pastas["Pasta_Chave"] == pasta_user]
+if not info_pasta.empty:
+    resolucao_atual = info_pasta.iloc[0]["Resolucao"]
+    foco_atual = info_pasta.iloc[0]["Foco_Pedagogico"]
 else:
-    escolas_disponiveis = todas_escolas_unificadas
+    resolucao_atual = "RESOLUÇÃO SEDUC Nº 1, DE 6 DE JANEIRO DE 2026"
+    foco_atual = "Atuação Técnica e Pedagógica conforme diretrizes da URE Miracatu."
 
-meses_pt = {
-    1: "Janeiro", 2: "Fevereiro", 3: "Março", 4: "Abril",
-    5: "Maio", 6: "Junho", 7: "Julho", 8: "Agosto",
-    9: "Setembro", 10: "Outubro", 11: "Novembro", 12: "Dezembro"
-}
-
-# --- MENU LATERAL ---
-st.sidebar.title("🧭 GPS Pedagógico")
-st.sidebar.markdown(f"**Usuário:** {user['Nome']}")
-st.sidebar.info(f"**Pasta:** {pasta_chave}\n\n**Frentes:** {pasta_completa}\n\n**Componente:** {user.get('Componente', 'Todos')} | **Etapa:** {user.get('Etapa', 'Todas')}")
-st.sidebar.link_button("📁 Pasta GPS no Google Drive", URL_PASTA_DRIVE_GPS)
-if qtd_drive_sync > 0:
-    st.sidebar.success(f"🔄 Drive Sincronizado ({qtd_drive_sync} arquivo(s))")
-
-if st.sidebar.button("Sair"):
-    del st.session_state["user"]
-    st.rerun()
-
-menu = st.sidebar.radio("Navegação", [
-    "1. GPS Semanal (Intencionalidade)",
-    "2. Planner Mensal & Tarefas da Pasta",
-    "3. Plano de Trabalho, E-mail & Agenda",
-    "4. Roteiro de Visita, Termos & Repasse",
-    "5. Painel CEC (Drive, Agendamentos & 1:1)"
-])
-
-# ==============================================================================
-# ABA 1: GPS SEMANAL
-# ==============================================================================
-if menu == "1. GPS Semanal (Intencionalidade)":
-    st.header(f"🧭 GPS Semanal — {pasta_chave}")
-    st.caption(f"**Base Legal:** {info_pasta['Resolucao']}")
-    with st.expander("📜 Ver Atribuições Legais Completas desta Pasta (Resolução SEDUC nº 1/2026)", expanded=False):
-        st.text(info_pasta["Foco_Pedagogico"])
-
-    if st.session_state["boletins_pdf_texto"]:
-        with st.expander("📰 Destaques Extraídos do Boletim Semanal / Circular (Drive)", expanded=False):
-            st.write(st.session_state["boletins_pdf_texto"][:1800] + "...")
-
-    if not df_eventos.empty and "Pasta" in df_eventos.columns:
-        ev_pasta = df_eventos[(df_eventos["Pasta"].apply(mapear_pasta_chave) == pasta_chave) | (df_eventos["Pasta"].astype(str).str.lower() == "todas")]
-        for _, ev in ev_pasta.iterrows():
-            st.info(f"📅 **Alerta de Calendário Obrigatório ({ev.get('Data_Evento', '')}):** **{ev.get('Nome_Evento', '')}** — {ev.get('Acao_Obrigatoria', '')}")
-
-    meus_comp = [c for c in st.session_state["agenda_cec"] if c["Destino"] in ["Toda a Equipe", pasta_chave, user["Nome"]]]
-    if meus_comp:
-        st.warning("📌 **Alinhamentos / Convocações Agendados pelo CEC na Sua Semana:**")
-        for c in meus_comp:
-            st.write(f"- **{c['Data']} ({c['Horario']})** — [{c['Tipo']}] {c['Assunto']}")
-
-    escola_gps = st.selectbox("Selecione a Escola para visualizar a Intencionalidade da Semana:", escolas_disponiveis)
-
-    if pasta_chave == "MULTIPLICA":
-        curs_esc = df_cursistas[df_cursistas["Escola"].apply(normalizar_texto) == normalizar_texto(escola_gps)]
-        if not curs_esc.empty:
-            st.success(f"🎯 **INTENCIONALIDADE: ACOMPANHAMENTO FORMATIVO** — Escola com cursistas/multiplicadores ativos em **{user.get('Componente', '')}**.")
-            st.dataframe(curs_esc, use_container_width=True)
-        else:
-            st.warning(f"📢 **INTENCIONALIDADE: MOBILIZAÇÃO, DIVULGAÇÃO E APOIO OPERACIONAL** — Escola sem cursistas ativos mapeados em **{user.get('Componente', '')}**. Foco: alinhar divulgação com CGP/Direção e destravar adesão.")
-
-    dados_esc = df_indicadores[df_indicadores["Escola"].apply(normalizar_texto) == normalizar_texto(escola_gps)].copy()
-
-    comp_user = normalizar_texto(user.get("Componente", "TODOS"))
-    if pasta_chave == "DESENVOLVIMENTO CURRICULAR" and comp_user not in ["", "TODOS", "NAN", "NONE"]:
-        dados_comp = dados_esc[dados_esc["Componente"].apply(normalizar_texto).str.contains(comp_user, na=False)]
-        if not dados_comp.empty:
-            dados_esc = dados_comp
-
-    st.subheader("🔍 Raio-X Cirúrgico: Avaliações, Turmas, Professores e Estudantes")
-    if dados_esc.empty:
-        st.info("Aguardando carregamento das planilhas de indicadores/avaliações desta unidade no Google Drive / Painel CEC (Aba 5).")
-    else:
-        avaliacoes_disp = ["Todas as Avaliações"] + sorted(dados_esc["Avaliacao"].astype(str).unique().tolist())
-        av_sel = st.selectbox("Filtrar por Avaliação (SARESP, Diagnóstica, Prova Paulista, Provão Paulista, SAEB, ENEM):", avaliacoes_disp)
-        if av_sel != "Todas as Avaliações":
-            dados_esc = dados_esc[dados_esc["Avaliacao"].astype(str) == av_sel]
-
-        abaixo_basico = dados_esc[dados_esc["Nivel"].apply(normalizar_texto).str.contains("ABAIXO|INSUFICIENTE|DEFASAGEM", na=False)]
-        freq_num = pd.to_numeric(dados_esc["Frequencia"], errors="coerce")
-        freq_media = f"{freq_num.mean():.1f}%" if not freq_num.dropna().empty else "N/D"
-        baixa_freq = len(dados_esc[freq_num < 75]) if not freq_num.dropna().empty else 0
-
-        if pasta_chave == "DESENVOLVIMENTO CURRICULAR":
-            m1, m2, m3 = st.columns(3)
-            m1.metric("Registros Abaixo do Básico", len(abaixo_basico))
-            m2.metric("Turmas Críticas no Componente", dados_esc["Turma"].nunique())
-            m3.metric("Componentes Analisados", dados_esc["Componente"].nunique())
-
-            st.markdown("#### 🎯 Priorização Curricular: Turmas, Componentes e Proficiência")
-            dados_esc["_critico"] = dados_esc["Nivel"].apply(lambda x: 1 if any(k in normalizar_texto(x) for k in ["ABAIXO", "INSUFICIENTE", "DEFASAGEM"]) else 0)
-            resumo_turmas = (
-                dados_esc.groupby(["Avaliacao", "Componente", "Turma", "Professor", "Proficiencia_Nota"], as_index=False)
-                .agg(Qtd_Alertas_Criticos=("_critico", "sum"))
-                .sort_values(by=["Qtd_Alertas_Criticos", "Proficiencia_Nota"], ascending=[False, True])
-            )
-            st.dataframe(resumo_turmas, use_container_width=True)
-
-            st.markdown("#### 📋 Detalhamento Completo: Turmas, Proficiência e Plataformas")
-            cols_exibir = [c for c in ["Avaliacao", "Componente", "Turma", "Professor", "Estudante", "Nivel", "Proficiencia_Nota", "Habilidade_Critica", "Plataforma_Critica"] if c in dados_esc.columns]
-            st.dataframe(dados_esc[cols_exibir], use_container_width=True)
-        else:
-            m1, m2, m3, m4 = st.columns(4)
-            m1.metric("Registros Abaixo do Básico", len(abaixo_basico))
-            m2.metric("Turmas Mapeadas", dados_esc["Turma"].nunique())
-            m3.metric("Frequência / Participação Média", freq_media)
-            m4.metric("Alertas de Frequência (< 75%)", baixa_freq)
-
-            st.markdown("#### 🎯 Priorização de Turmas e Professores (Frequência e Proficiência)")
-            dados_esc["_critico"] = dados_esc["Nivel"].apply(lambda x: 1 if any(k in normalizar_texto(x) for k in ["ABAIXO", "INSUFICIENTE", "DEFASAGEM"]) else 0)
-            dados_esc["_freq_num"] = freq_num
-            resumo_turmas = (
-                dados_esc.groupby(["Avaliacao", "Componente", "Turma", "Professor", "Proficiencia_Nota"], as_index=False)
-                .agg(
-                    Qtd_Alertas_Criticos=("_critico", "sum"),
-                    Frequencia_Media=("_freq_num", "mean")
-                )
-                .sort_values(by=["Frequencia_Media", "Qtd_Alertas_Criticos"], ascending=[True, False])
-            )
-            resumo_turmas["Frequencia_Media"] = resumo_turmas["Frequencia_Media"].round(1).astype(str) + "%"
-            st.dataframe(resumo_turmas, use_container_width=True)
-
-            st.markdown("#### 📋 Detalhamento Completo de Turmas, Frequência e Habilidades")
-            cols_exibir = [c for c in ["Avaliacao", "Componente", "Turma", "Professor", "Estudante", "Nivel", "Proficiencia_Nota", "Frequencia", "Habilidade_Critica", "Plataforma_Critica"] if c in dados_esc.columns]
-            st.dataframe(dados_esc[cols_exibir], use_container_width=True)
-
-# ==============================================================================
-# ABA 2: PLANNER MENSAL VISUAL & TAREFAS DA PASTA
-# ==============================================================================
-elif menu == "2. Planner Mensal & Tarefas da Pasta":
-    st.header(f"🗓️ Planner Mensal — {user['Nome']} ({pasta_chave})")
-
-    cp1, cp2 = st.columns([1, 1])
-    with cp1:
-        mes_sel = st.selectbox("Mês:", list(meses_pt.keys()), index=datetime.today().month - 1, format_func=lambda m: meses_pt[m])
-    with cp2:
-        ano_sel = st.number_input("Ano:", min_value=2025, max_value=2030, value=datetime.today().year)
-
-    mes_ano_planner = f"{meses_pt[mes_sel]}/{ano_sel}"
-    st.caption("Legenda: 🔴 Feriado/Bloqueio | 🔵 Formação/Live SEDUC | 🟣 Alinhamento URE/CEC | 🟢 Visita/Compromisso PEC")
-
-    eventos_por_dia = {d: [] for d in range(1, 32)}
-    linhas_consolidadas_mes = []
-
-    # 0. Feriados Nacionais e Estaduais (SP) Automáticos
-    feriados_sp = holidays.Brazil(subdiv="SP", years=[ano_sel])
-    for dt_f, nome_f in feriados_sp.items():
-        if dt_f.month == mes_sel:
-            d_txt = dt_f.strftime("%d/%m/%Y")
-            eventos_por_dia[dt_f.day].append(f"🔴 [Feriado] {nome_f}")
-            linhas_consolidadas_mes.append({
-                "data_hora": f"{d_txt}\nDia Integral",
-                "atividade_local": f"Feriado — {nome_f}",
-                "publico": "Calendário Oficial Nacional/SP",
-                "intencionalidade": "Suspensão de atividades e visitas presenciais conforme calendário oficial."
-            })
-
-    # 1. Bloqueios e Feriados Municipais (Google Sheets)
-    if not df_bloqueios.empty and "Data" in df_bloqueios.columns:
-        for _, b in df_bloqueios.iterrows():
-            d_txt = str(b.get("Data", "")).strip()
-            p_af = str(b.get("Pasta_Afetada", "Todas")).strip()
-            if p_af.lower() == "todas" or mapear_pasta_chave(p_af) == pasta_chave:
-                try:
-                    dt_b = datetime.strptime(d_txt, "%d/%m/%Y")
-                    if dt_b.month == mes_sel and dt_b.year == ano_sel:
-                        rotulo = f"🔴 [{b.get('Tipo', 'Bloqueio')}] {b.get('Descricao', '')}"
-                        eventos_por_dia[dt_b.day].append(rotulo)
-                        linhas_consolidadas_mes.append({
-                            "data_hora": f"{d_txt}\nDia Integral",
-                            "atividade_local": f"{b.get('Tipo', 'Feriado')} — {b.get('Descricao', '')}",
-                            "publico": "Calendário Regional/Municipal",
-                            "intencionalidade": "Suspensão de visitas presenciais conforme calendário."
-                        })
-                except Exception:
-                    pass
-
-    # 2A. Formações e Eventos Manuais (Google Sheets)
-    if not df_eventos.empty and "Data_Evento" in df_eventos.columns:
-        for _, ev in df_eventos.iterrows():
-            d_txt = str(ev.get("Data_Evento", "")).strip()
-            p_ev = str(ev.get("Pasta", "Todas")).strip()
-            if p_ev.lower() == "todas" or mapear_pasta_chave(p_ev) == pasta_chave:
-                try:
-                    dt_e = datetime.strptime(d_txt, "%d/%m/%Y")
-                    if dt_e.month == mes_sel and dt_e.year == ano_sel:
-                        rotulo = f"🔵 {ev.get('Nome_Evento', '')}"
-                        eventos_por_dia[dt_e.day].append(rotulo)
-                        linhas_consolidadas_mes.append({
-                            "data_hora": f"{d_txt}\nConforme Pauta",
-                            "atividade_local": ev.get("Nome_Evento", "Formação / Live"),
-                            "publico": f"Pasta {pasta_chave}",
-                            "intencionalidade": ev.get("Acao_Obrigatoria", "Participação e desdobramento formativo.")
-                        })
-                except Exception:
-                    pass
-
-    # 2B. Agenda Oficial SEDUC 2026 (Aba EEC - PEC e CEC)
-    if not df_agenda_seduc.empty and "Data" in df_agenda_seduc.columns:
-        for _, row_s in df_agenda_seduc.iterrows():
-            status_ev = normalizar_texto(row_s.get("Status", ""))
-            if "CANCELADA" in status_ev:
-                continue
-            dt_s = interpretar_data_seduc(row_s.get("Data", ""))
-            if dt_s and dt_s.month == mes_sel and dt_s.year == ano_sel:
-                pub_alvo = row_s.get("Público-alvo", "")
-                if evento_pertence_ao_pec(pub_alvo, pasta_chave, user.get("Componente", "")):
-                    h_ini_s = str(row_s.get("Início", "")).strip()
-                    h_fim_s = str(row_s.get("Fim", "")).strip()
-                    ativ_s = str(row_s.get("Atividade", "")).strip()
-                    local_s = str(row_s.get("Local", "CMSP/Teams")).strip()
-                    desc_s = str(row_s.get("Descrição", "")).strip()
-                    eventos_por_dia[dt_s.day].append(f"🔵 [{h_ini_s}-{h_fim_s}] {ativ_s} ({local_s})")
-                    linhas_consolidadas_mes.append({
-                        "data_hora": f"{dt_s.strftime('%d/%m/%Y')}\n{h_ini_s} às {h_fim_s}",
-                        "atividade_local": f"[Agenda SEDUC] {ativ_s} ({local_s})",
-                        "publico": pub_alvo,
-                        "intencionalidade": desc_s if desc_s and desc_s != "nan" else f"Participação na formação/orientação SEDUC ({ativ_s})."
-                    })
-
-    # 3A. Alinhamentos agendados pelo CEC no painel
-    for c in st.session_state["agenda_cec"]:
-        if c["Destino"] in ["Toda a Equipe", pasta_chave, user["Nome"]]:
-            try:
-                dt_c = datetime.strptime(c["Data"], "%d/%m/%Y")
-                if dt_c.month == mes_sel and dt_c.year == ano_sel:
-                    eventos_por_dia[dt_c.day].append(f"🟣 [{c['Horario']}] {c['Assunto']}")
-                    linhas_consolidadas_mes.append({
-                        "data_hora": f"{c['Data']}\n{c['Horario']}",
-                        "atividade_local": f"{c['Tipo']} — Sede URE",
-                        "publico": c["Destino"],
-                        "intencionalidade": c["Assunto"]
-                    })
-            except Exception:
-                pass
-
-    # 3B. Eventos vindos direto da Google Agenda do CEC
-    for ev_g in carregar_eventos_gcal(URL_GOOGLE_AGENDA_CEC):
-        if ev_g["mes"] == mes_sel and ev_g["ano"] == ano_sel:
-            eventos_por_dia[ev_g["dia"]].append(f"🟣 [{ev_g['horario']}] {ev_g['resumo']}")
-            linhas_consolidadas_mes.append({
-                "data_hora": f"{ev_g['data_str']}\n{ev_g['horario']}",
-                "atividade_local": f"[Agenda URE/CEC] {ev_g['resumo']} ({ev_g['local']})",
-                "publico": "Equipe EEC / URE Miracatu",
-                "intencionalidade": ev_g["descricao"] if ev_g["descricao"] else ev_g["resumo"]
-            })
-
-    # 4. Visitas e compromissos próprios do PEC
-    for comp in st.session_state["compromissos_pec"]:
-        if comp["PEC"] == user["Nome"]:
-            try:
-                dt_p = datetime.strptime(comp["Data"], "%d/%m/%Y")
-                if dt_p.month == mes_sel and dt_p.year == ano_sel:
-                    eventos_por_dia[dt_p.day].append(f"🟢 [{comp['Horario']}] {comp['Local']}")
-                    linhas_consolidadas_mes.append({
-                        "data_hora": f"{comp['Data']}\n{comp['Horario']}",
-                        "atividade_local": f"{comp['Natureza']} — {comp['Local']}",
-                        "publico": comp["Publico"],
-                        "intencionalidade": comp["Intencionalidade"]
-                    })
-            except Exception:
-                pass
-
-    # --- GRADE VISUAL DO CALENDÁRIO MENSAL (SEGUNDA A SÁBADO) ---
-    cal = calendar.Calendar(firstweekday=0)
-    semanas = cal.monthdayscalendar(ano_sel, mes_sel)
-    dias_semana = ["Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado"]
-
-    cols_h = st.columns(6)
-    for idx_d, nome_d in enumerate(dias_semana):
-        cols_h[idx_d].markdown(f"**{nome_d}**")
-
-    for sem in semanas:
-        cols_s = st.columns(6)
-        for idx_d in range(6):
-            dia_num = sem[idx_d]
-            with cols_s[idx_d]:
-                if dia_num == 0:
-                    st.markdown("<div style='min-height:95px; background-color:#f8f9fa; border-radius:6px; padding:6px;'></div>", unsafe_allow_html=True)
-                else:
-                    itens_dia = eventos_por_dia.get(dia_num, [])
-                    conteudo_html = f"<strong>Dia {dia_num:02d}</strong><br>"
-                    if itens_dia:
-                        conteudo_html += "<br>".join([f"<span style='font-size:12px;'>{it}</span>" for it in itens_dia])
-                    else:
-                        conteudo_html += "<span style='font-size:11px; color:#888;'>Livre para visita/planejamento</span>"
-                    borda = "#2b6cb0" if itens_dia else "#e2e8f0"
-                    fundo = "#ebf8ff" if itens_dia else "#ffffff"
-                    st.markdown(
-                        f"<div style='min-height:105px; border:1px solid {borda}; background-color:{fundo}; border-radius:6px; padding:6px; margin-bottom:6px;'>{conteudo_html}</div>",
-                        unsafe_allow_html=True
-                    )
-
+# --- BARRA LATERAL ---
+with st.sidebar:
+    st.markdown(f"### 👤 {nome_user}")
+    st.markdown(f"**Perfil:** `{cargo_user}` | **Pasta:** `{pasta_user}`")
+    if comp_user and normalizar_texto(comp_user) not in ["", "TODOS", "NAN", "NONE"]:
+        st.markdown(f"**Componente:** `{comp_user}`")
+    st.caption(f"📜 {resolucao_atual}")
     st.divider()
-    col_t1, col_t2 = st.columns([1.2, 1])
 
-    with col_t1:
-        st.subheader(f"✅ Tarefas e Atribuições Obrigatórias do Mês ({pasta_chave})")
-        tarefas_base = TAREFAS_POR_PASTA.get(pasta_chave, TAREFAS_POR_PASTA["QUALIDADE DA AULA"])
-        for idx_t, t_txt in enumerate(tarefas_base):
-            st.checkbox(t_txt, key=f"tarefa_padrao_{pasta_chave}_{mes_sel}_{idx_t}")
+    st.markdown("### 📂 Fontes de Dados (Drive URE)")
+    if qtd_drive_sync > 0:
+        st.success(f"🔄 Drive Sincronizado ({qtd_drive_sync} arquivo(s))")
+    else:
+        st.info("📂 Pasta GPS conectada (aguardando API Key no código ou novos arquivos)")
+    st.link_button("📂 Abrir Pasta GPS no Drive", URL_PASTA_DRIVE_GPS, use_container_width=True)
 
-        for idx_ex, t_ex in enumerate(st.session_state["tarefas_extras_pec"]):
-            if t_ex["PEC"] == user["Nome"] and t_ex["Mes"] == mes_ano_planner:
-                st.checkbox(f"📌 {t_ex['Descricao']}", key=f"tarefa_extra_{idx_ex}")
-
-        nova_tarefa = st.text_input("Adicionar tarefa ou demanda específica deste mês:")
-        if st.button("Adicionar Tarefa ao Planner"):
-            if nova_tarefa.strip():
-                st.session_state["tarefas_extras_pec"].append({
-                    "PEC": user["Nome"], "Mes": mes_ano_planner, "Descricao": nova_tarefa.strip()
-                })
-                st.rerun()
-
-    with col_t2:
-        st.subheader("➕ Inserir Compromisso Rápido no Planner")
-        dia_add = st.date_input("Data do Compromisso:", datetime(ano_sel, mes_sel, min(datetime.today().day, 28)), key="data_quick_planner")
-        nat_add = st.selectbox("Tipo:", ["Visita Presencial à Escola", "Formação / Live SEDUC", "Alinhamento URE", "Plantão Interno GPS"], key="nat_quick")
-        loc_add = st.selectbox("Escola / Local:", escolas_disponiveis + ["Sede da URE Miracatu", "Transmissão Online (EFAPE/CMSP)"])
-        exibir_norteador_planejamento(pasta_chave, user.get("Componente", "Todos"), loc_add, df_indicadores, df_cursistas, escolas_disponiveis)
-        hor_add = st.text_input("Horário:", "08:00 às 12:00", key="hor_quick")
-        int_add = st.text_input("Objetivo / Foco:", "Acompanhamento pedagógico conforme GPS")
-        if st.button("Salvar no Calendário do Mês", type="primary"):
-            st.session_state["compromissos_pec"].append({
-                "PEC": user["Nome"], "Data": dia_add.strftime("%d/%m/%Y"),
-                "Horario": hor_add, "Natureza": nat_add, "Local": loc_add,
-                "Publico": "Equipe Escolar / URE", "Intencionalidade": int_add
-            })
-            st.success("Compromisso adicionado ao Planner!")
+    with st.expander("➕ Upload Manual Avulso (Opcional)", expanded=False):
+        st.caption("Use apenas se quiser testar um arquivo local sem subir no Drive.")
+        arquivos_up = st.file_uploader("Subir PDF, XLSX ou CSV:", type=["pdf", "xlsx", "csv"], accept_multiple_files=True)
+        if arquivos_up and st.button("Processar Arquivos Locais"):
+            novos_ind, novos_curs, textos_pdf = [], [], []
+            for arq in arquivos_up:
+                n_low = arq.name.lower()
+                if n_low.endswith(".pdf"):
+                    leitor = PdfReader(arq)
+                    textos_pdf.append(f"**[{arq.name}]**\n" + "\n".join([p.extract_text() or "" for p in leitor.pages]))
+                elif n_low.endswith(".csv"):
+                    df_p = padronizar_planilha_bruta(pd.read_csv(arq), arq.name)
+                    (novos_curs if "multiplica" in n_low or "cursista" in n_low else novos_ind).append(df_p)
+                elif n_low.endswith(".xlsx"):
+                    df_p = padronizar_planilha_bruta(pd.read_excel(arq), arq.name)
+                    (novos_curs if "multiplica" in n_low or "cursista" in n_low else novos_ind).append(df_p)
+            if novos_ind:
+                st.session_state["indicadores_ativos"] = pd.concat([st.session_state["indicadores_ativos"]] + novos_ind, ignore_index=True)
+            if novos_curs:
+                st.session_state["cursistas_ativos"] = pd.concat(novos_curs, ignore_index=True)
+            if textos_pdf:
+                st.session_state["boletins_pdf_texto"] += "\n\n" + "\n\n".join(textos_pdf)
+            st.success("Arquivos locais integrados!")
             st.rerun()
 
     st.divider()
-    st.subheader(f"📥 Exportar Plano de Trabalho Consolidado de {mes_ano_planner}")
-    if not linhas_consolidadas_mes:
-        st.info("Adicione compromissos acima ou preencha eventos na Aba 3 para consolidar o documento completo do mês.")
-    else:
-        linhas_ordenadas = sorted(linhas_consolidadas_mes, key=lambda x: x["data_hora"])
-        bytes_mes = montar_docx_oficial(
-            f"Plano de Trabalho do Mês de {mes_ano_planner}",
-            str(user["Nome"]),
-            f"{pasta_chave} ({user.get('Componente', 'Todos')})",
-            mes_ano_planner,
-            info_pasta["Resolucao"],
-            linhas_ordenadas
-        )
-        nome_arq_mes = f"Plano_Trabalho_{meses_pt[mes_sel]}_{ano_sel}_{user['Nome'].replace(' ', '_')}.docx"
-        cm1, cm2 = st.columns(2)
-        with cm1:
-            st.download_button("📥 Baixar Plano do Mês Completo (.docx com Cabeçalho URE)", data=bytes_mes, file_name=nome_arq_mes)
-        with cm2:
-            if st.button("📧 Enviar Plano do Mês por E-mail (PEC, Dirigente e CEC)", type="primary"):
-                if "COLE_AQUI" in SENHA_APP_GMAIL:
-                    st.warning("⚠️ Configure `SENHA_APP_GMAIL` no topo do código para disparar e-mails.")
-                else:
-                    try:
-                        msg = EmailMessage()
-                        msg["Subject"] = f"📋 Plano de Trabalho do Mês de {mes_ano_planner} — {user['Nome']} ({pasta_chave})"
-                        msg["From"] = EMAIL_DISPARADOR
-                        msg["To"] = f"{user['Email']}, {EMAIL_DIRIGENTE}"
-                        msg["Cc"] = EMAIL_CEC
-                        msg.set_content(f"Prezados(as),\n\nSegue em anexo o Plano de Trabalho consolidado referente ao mês de {mes_ano_planner}.\n\nEspecialista: {user['Nome']}\nPasta: {pasta_chave}\n\nAtenciosamente,\nSistema GPS — URE Miracatu")
-                        msg.add_attachment(bytes_mes, maintype="application", subtype="vnd.openxmlformats-officedocument.wordprocessingml.document", filename=nome_arq_mes)
-                        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
-                            smtp.login(EMAIL_DISPARADOR, SENHA_APP_GMAIL)
-                            smtp.send_message(msg)
-                        st.success(f"✅ Plano mensal enviado para {user['Email']}, Dirigente ({EMAIL_DIRIGENTE}) e CEC ({EMAIL_CEC})!")
-                    except Exception as e:
-                        st.error(f"Erro no envio: {e}")
+    if st.button("Sair"):
+        del st.session_state["user"]
+        st.rerun()
 
-# ==============================================================================
-# ABA 3: PLANO DE TRABALHO INDIVIDUAL, E-MAIL E GOOGLE AGENDA
-# ==============================================================================
-elif menu == "3. Plano de Trabalho, E-mail & Agenda":
-    st.header("📄 Gerador de Plano de Trabalho (Por Atividade / Visita), E-mail e Agenda")
+st.title("🧭 GPS — Guia Pedagógico Semanal | URE Miracatu")
 
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        natureza_dia = st.selectbox("Natureza da Atividade:", [
-            "Visita Presencial à Escola",
-            "Alinhamento Semanal com a Dirigente (URE)",
-            "Alinhamento Equipe / Individual com CEC (URE)",
-            "Plantão Interno na URE (Análise GPS)",
-            "Convocação / Formação SEDUC ou EFAPE",
-            "Feriado / Ponto Facultativo"
-        ])
-        data_plano = st.date_input("Data:", datetime.today())
-    with c2:
-        hora_ini = st.text_input("Hora Início (HH:MM):", "08:00")
-        hora_fim = st.text_input("Hora Término (HH:MM):", "11:30")
-    with c3:
-        if natureza_dia == "Visita Presencial à Escola":
-            local_plano = st.selectbox("Escola:", escolas_disponiveis)
-            publico_plano = st.text_input("Turma / Professor / CGP:", "CGP e Docentes do Componente")
-        else:
-            local_plano = st.text_input("Local / Referência:", "Sede da URE Miracatu / EFAPE")
-            publico_plano = st.text_input("Participantes / Boletim:", "Equipe Pedagógica / Convocação")
-
-    if natureza_dia == "Visita Presencial à Escola":
-        exibir_norteador_planejamento(pasta_chave, user.get("Componente", "Todos"), local_plano, df_indicadores, df_cursistas, escolas_disponiveis)
-
-    data_str = data_plano.strftime("%d/%m/%Y")
-    mes_ano_str = f"{meses_pt[data_plano.month]}/{data_plano.year}"
-
-    if not df_bloqueios.empty and "Data" in df_bloqueios.columns:
-        bloq = df_bloqueios[(df_bloqueios["Data"].astype(str) == data_str) & ((df_bloqueios["Pasta_Afetada"].astype(str).str.lower() == "todas") | (df_bloqueios["Pasta_Afetada"].apply(mapear_pasta_chave) == pasta_chave))]
-        if not bloq.empty and natureza_dia == "Visita Presencial à Escola":
-            st.error(f"🚫 **Atenção — Data Bloqueada ({bloq.iloc[0]['Tipo']}):** {bloq.iloc[0]['Descricao']}. Altere a Natureza da Atividade acima.")
-
-    if natureza_dia == "Visita Presencial à Escola":
-        dados_esc = df_indicadores[df_indicadores["Escola"].apply(normalizar_texto) == normalizar_texto(local_plano)]
-        crit_esc = dados_esc[dados_esc["Nivel"].apply(normalizar_texto).str.contains("ABAIXO|INSUFICIENTE|DEFASAGEM", na=False)] if not dados_esc.empty else pd.DataFrame()
-        alunos_crit = ", ".join(crit_esc["Estudante"].astype(str).unique().tolist()[:5]) if not crit_esc.empty else "Turmas e estudantes prioritários da unidade"
-        turmas_crit = ", ".join(crit_esc["Turma"].astype(str).unique().tolist()[:5]) if not crit_esc.empty else "Turmas prioritárias"
-        profs_crit = ", ".join(crit_esc["Professor"].astype(str).unique().tolist()[:4]) if not crit_esc.empty else "Docentes do componente"
-        avs_crit = ", ".join(dados_esc["Avaliacao"].astype(str).unique().tolist()) if not dados_esc.empty else "Avaliações internas e externas"
-        habs_crit = ", ".join(dados_esc["Habilidade_Critica"].astype(str).unique().tolist()[:4]) if not dados_esc.empty else "Habilidades essenciais da semana"
-        plats_crit = ", ".join(dados_esc["Plataforma_Critica"].astype(str).unique().tolist()[:3]) if not dados_esc.empty else "Plataformas educacionais SEDUC"
-        primeira_linha_legal = info_pasta["Foco_Pedagogico"].split("\n")[0]
-
-        if pasta_chave == "MULTIPLICA":
-            curs_esc = df_cursistas[df_cursistas["Escola"].apply(normalizar_texto) == normalizar_texto(local_plano)]
-            if not curs_esc.empty:
-                texto_auto = f"Intencionalidade Formativa ({info_pasta['Resolucao']} - {primeira_linha_legal}): Acompanhamento presencial dos cursistas/multiplicadores de {user.get('Componente', '')} e desdobramento em ATPC."
-            else:
-                texto_auto = f"Intencionalidade de Mobilização e Apoio Operacional ({info_pasta['Resolucao']} - {primeira_linha_legal}): Divulgação do Programa Multiplica SP ({user.get('Componente', '')}) junto à equipe gestora e mapeamento de docentes elegíveis."
-        elif pasta_chave == "DESENVOLVIMENTO CURRICULAR":
-            texto_auto = (
-                f"Fundamentação: {info_pasta['Resolucao']} — {primeira_linha_legal} "
-                f"Análise de proficiência ({avs_crit}) na unidade ({pasta_completa}): "
-                f"Priorização das turmas ({turmas_crit}) e alinhamento formativo com os docentes ({profs_crit}); "
-                f"Indicadores críticos ({habs_crit}); Participação/Plataformas ({plats_crit}); "
-                f"Foco: {alunos_crit}."
-            )
-        else:
-            texto_auto = (
-                f"Fundamentação: {info_pasta['Resolucao']} — {primeira_linha_legal} "
-                f"Acompanhamento de frequência, participação e indicadores na unidade ({pasta_completa}): "
-                f"Turmas prioritárias ({turmas_crit}); Foco ({habs_crit}); Referência: {alunos_crit}."
-            )
-    else:
-        texto_auto = f"Atividade institucional ({natureza_dia}) conforme cronograma da Unidade Regional de Ensino de Miracatu / Agenda SEDUC."
-
-    texto_final = st.text_area("Intencionalidade / Justificativa Oficial (editável):", value=texto_auto, height=130)
-
-    if st.button("➕ Registrar no Planner Mensal"):
-        st.session_state["compromissos_pec"].append({
-            "PEC": user["Nome"], "Data": data_str,
-            "Horario": f"{hora_ini} às {hora_fim}", "Natureza": natureza_dia,
-            "Local": local_plano, "Publico": publico_plano, "Intencionalidade": texto_final
-        })
-        st.success(f"✅ Atividade de {data_str} adicionada ao seu Planner Mensal!")
-
-    bytes_doc = montar_docx_oficial(
-        f"Plano de Trabalho do Mês de {mes_ano_str}",
-        str(user["Nome"]),
-        f"{pasta_chave} ({user.get('Componente', 'Todos')})",
-        data_str,
-        info_pasta["Resolucao"],
-        [{"data_hora": f"{data_str}\n{hora_ini} às {hora_fim}", "atividade_local": f"{natureza_dia}\n{local_plano}", "publico": publico_plano, "intencionalidade": texto_final}]
-    )
-
-    link_gcal = gerar_link_google_agenda(f"GPS [{pasta_chave}] — {local_plano}", data_plano, hora_ini, hora_fim, local_plano, texto_final)
-    nome_arq_final = f"Plano_Trabalho_{meses_pt[data_plano.month]}_{user['Nome'].replace(' ', '_')}.docx"
-
-    b1, b2, b3 = st.columns(3)
-    with b1:
-        st.download_button("📥 1. Baixar Word (.docx)", data=bytes_doc, file_name=nome_arq_final)
-    with b2:
-        st.link_button("📅 2. Salvar na Google Agenda", link_gcal)
-    with b3:
-        if st.button("📧 3. Enviar E-mail (PEC, Dirigente e CEC)", type="primary"):
-            if "COLE_AQUI" in SENHA_APP_GMAIL:
-                st.warning("⚠️ Cole as 16 letras da Senha de App do Gmail no topo do código (`SENHA_APP_GMAIL`) para ativar o envio automático.")
-            else:
-                try:
-                    msg = EmailMessage()
-                    msg["Subject"] = f"📋 Plano de Trabalho ({mes_ano_str}) | {local_plano} — {user['Nome']} ({pasta_chave})"
-                    msg["From"] = EMAIL_DISPARADOR
-                    msg["To"] = f"{user['Email']}, {EMAIL_DIRIGENTE}"
-                    msg["Cc"] = EMAIL_CEC
-                    msg.set_content(
-                        f"Prezados(as),\n\n"
-                        f"Segue em anexo o Plano de Trabalho do Mês de {mes_ano_str}.\n\n"
-                        f"• Nome do PEC: {user['Nome']} ({user['Email']})\n"
-                        f"• Pasta: {pasta_chave} | {user.get('Componente', 'Todos')}\n"
-                        f"• Data: {data_str} ({hora_ini} às {hora_fim})\n"
-                        f"• Atividade / Escola: {natureza_dia} — {local_plano}\n\n"
-                        f"Intencionalidade Pedagógica:\n{texto_final}\n\n"
-                        f"Atenciosamente,\n"
-                        f"Sistema GPS — Guia Pedagógico Semanal (URE Miracatu)"
-                    )
-                    msg.add_attachment(bytes_doc, maintype="application", subtype="vnd.openxmlformats-officedocument.wordprocessingml.document", filename=nome_arq_final)
-                    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
-                        smtp.login(EMAIL_DISPARADOR, SENHA_APP_GMAIL)
-                        smtp.send_message(msg)
-                    st.success(f"✅ Enviado com sucesso para {user['Email']}, Dirigente ({EMAIL_DIRIGENTE}) e cópia para CEC ({EMAIL_CEC})!")
-                except Exception as e:
-                    st.error(f"Erro no envio: {e}")
-
-# ==============================================================================
-# ABA 4: ROTEIRO DE VISITA, TERMOS DE APOIO E REPASSE ENTRE PECS
-# ==============================================================================
-elif menu == "4. Roteiro de Visita, Termos & Repasse":
-    st.header("✅ Roteiro Presencial, Termos de Visita/Apoio e Repasse entre PECs")
-    esc_vis = st.selectbox("Escola Visitada:", escolas_disponiveis)
-
-    pendentes = [e for e in st.session_state["encaminhamentos"] if e["Escola"] == esc_vis and e["Status"] == "Pendente"]
-    if pendentes:
-        st.error("🔄 **Encaminhamento(s) Pendente(s) nesta Escola (Verificação Obrigatória):**")
-        for idx, p in enumerate(pendentes):
-            st.write(f"- **{p['Origem']} ({p['Pasta_Origem']})**: {p['Descricao']}")
-            if st.checkbox("Confirmar que este encaminhamento foi verificado/cumprido hoje", key=f"chk_p_{idx}"):
-                p["Status"] = "Cumprido"
-
-    st.subheader("📋 Roteiro de Acompanhamento Presencial")
-    r1, r2, r3 = st.columns(3)
-    with r1:
-        st.markdown("**1. Observação de Aula**")
-        a1 = st.checkbox("Possui plano de aula alinhado à habilidade da semana")
-        a2 = st.checkbox("Utiliza Material Digital / Escopo-Sequência")
-        a3 = st.checkbox("Atende estudantes Abaixo do Básico de forma focalizada (agrupamentos/mediação)")
-    with r2:
-        st.markdown("**2. Acompanhamento de ATPC**")
-        t1 = st.checkbox("Possui Pauta formativa estruturada")
-        t2 = st.checkbox("Possui Lista de Presença e Ata registradas")
-        t3 = st.checkbox("Promove socialização de boas práticas")
-    with r3:
-        st.markdown("**3. Alinhamento com Coordenador (CGP/CGPG)**")
-        c_1 = st.checkbox("Verificação de pautas, atas e registros")
-        c_2 = st.checkbox("Análise de indicadores por turma e nominalmente por estudante")
-        c_3 = st.checkbox("Apoio presencial em sala e registro de feedbacks")
-
-    col_doc1, col_doc2 = st.columns(2)
-    with col_doc1:
-        tipo_termo = st.selectbox("Tipo de Documento / Registro:", [
-            "Termo de Visita",
-            "Termo de Apoio Presencial",
-            "Registro sem Anexo (Apenas Roteiro)"
-        ])
-    with col_doc2:
-        termo_pdf = st.file_uploader("Anexar Termo Assinado (PDF) para Auditoria e 1:1:", type=["pdf"])
-
-    nome_termo_anexado = "Não anexado"
-    if termo_pdf is not None:
-        nome_termo_anexado = termo_pdf.name
-        leitor = PdfReader(termo_pdf)
-        texto_pdf = " ".join([pag.extract_text() or "" for pag in leitor.pages]).lower()
-        palavras_risco = ["violência", "violencia", "bullying", "agressão", "agressao", "ameaça", "automutilação"]
-        palavras_fluxo = ["protocolo 179", "placon", "conviva", "família", "familia", "conselho tutelar", "rede de proteção", "acolhimento"]
-        if any(w in texto_pdf for w in palavras_risco) and not any(w in texto_pdf for w in palavras_fluxo):
-            st.error("🚨 **Alerta de Auditoria (Protocolo 179):** O Termo cita ocorrência de conflito/violência, mas não menciona registro na Plataforma Conviva (Placon), acionamento da família ou fluxo do Protocolo 179!")
-        else:
-            st.success(f"✅ **{tipo_termo} ({nome_termo_anexado}):** Validado sem inconsistências de protocolo.")
-
-    st.subheader("📤 Encaminhamento / Passar Bastão para Outra Pasta")
-    desc_enc = st.text_input("Descreva o encaminhamento acordado com a escola ou repassado a outro especialista:")
-    lista_pecs = [f"{r['Nome']} ({mapear_pasta_chave(r['Pasta'])} - {r['Componente']})" for _, r in df_usuarios.iterrows() if mapear_pasta_chave(r["Pasta"]) not in ["CEC", "AT"]]
-    dest_enc = st.selectbox("Responsável pelo acompanhamento no próximo ciclo:", ["Manter comigo (Próxima visita)"] + lista_pecs)
-
-    if st.button("Salvar Registro Completo da Visita / Apoio", type="primary"):
-        prioridade_ok = a3 or c_2
-        if not prioridade_ok:
-            st.info("ℹ️ Observação registrada: Itens de foco nos estudantes Abaixo do Básico não marcados (será pontuado no diálogo de 1:1).")
-        if desc_enc:
-            st.session_state["encaminhamentos"].append({
-                "Escola": esc_vis, "Origem": user["Nome"], "Pasta_Origem": pasta_chave,
-                "Destino": dest_enc, "Descricao": desc_enc, "Status": "Pendente"
-            })
-        st.session_state["visitas"].append({
-            "Data": datetime.today().strftime("%d/%m/%Y"),
-            "PEC": user["Nome"],
-            "Pasta": pasta_chave,
-            "Escola": esc_vis,
-            "Tipo_Termo": tipo_termo,
-            "Arquivo_Termo": nome_termo_anexado,
-            "Foco_Criticos_OK": "Sim" if prioridade_ok else "Não"
-        })
-        st.success(f"✅ {tipo_termo} em {esc_vis} registrado e vinculado ao relatório de 1:1!")
-
-# ==============================================================================
-# ABA 5: PAINEL DO CEC (DRIVE, AGENDAMENTOS E RELATÓRIO 1:1)
-# ==============================================================================
-elif menu == "5. Painel CEC (Drive, Agendamentos & 1:1)":
-    st.header("🎛️ Painel do CEC — Sincronização Drive, Agendamentos e Relatório 1:1")
-
-    st.subheader("📂 1. Sincronização Google Drive & Upload Complementar")
-    if qtd_drive_sync > 0:
-        st.success(f"✅ **Sincronização Automática Ativa:** {qtd_drive_sync} arquivo(s) lido(s) diretamente da pasta GPS do Google Drive ({len(df_indicadores)} registros processados).")
-    else:
-        st.info("ℹ️ Para sincronizar automaticamente tudo o que você jogar na pasta GPS do Drive sem precisar fazer upload abaixo, cole sua `GOOGLE_DRIVE_API_KEY` no topo do `app.py`.")
-
-    arquivos_semana = st.file_uploader("Upload Manual Complementar (Planilhas BI .xlsx, .csv ou Boletins .pdf):", type=["xlsx", "csv", "pdf"], accept_multiple_files=True)
-    if arquivos_semana:
-        dfs_ind, dfs_curs, textos_pdf = [], [], []
-        for arq in arquivos_semana:
-            nome_low = arq.name.lower()
-            if nome_low.endswith(".pdf"):
-                leitor = PdfReader(arq)
-                textos_pdf.append(f"**[{arq.name}]**\n" + "\n".join([p.extract_text() or "" for p in leitor.pages]))
-            else:
-                df_lido = pd.read_csv(arq) if nome_low.endswith(".csv") else pd.read_excel(arq)
-                df_pad = padronizar_planilha_bruta(df_lido, arq.name)
-                if "multiplica" in nome_low or "cursista" in nome_low:
-                    dfs_curs.append(df_pad)
-                else:
-                    dfs_ind.append(df_pad)
-        if dfs_ind:
-            st.session_state["indicadores_ativos"] = pd.concat(dfs_ind, ignore_index=True)
-        if dfs_curs:
-            st.session_state["cursistas_ativos"] = pd.concat(dfs_curs, ignore_index=True)
-        if textos_pdf:
-            st.session_state["boletins_pdf_texto"] = "\n\n".join(textos_pdf)
-        st.success(f"✅ {len(arquivos_semana)} arquivo(s) processado(s) e distribuído(s) para todas as 30 escolas!")
-
-    st.divider()
-    st.subheader("📅 2. Agendar Alinhamento (Equipe / Individual) ou Convocação SEDUC")
-    ca1, ca2, ca3 = st.columns(3)
-    with ca1:
-        tipo_ag = st.selectbox("Tipo de Compromisso:", [
-            "Alinhamento Geral com Toda a Equipe",
-            "Alinhamento por Pasta",
-            "Alinhamento Individual (1:1)",
-            "Convocação Agenda SEDUC / EFAPE"
-        ])
-        data_ag = st.date_input("Data do Compromisso:", datetime.today())
-    with ca2:
-        hor_ag = st.text_input("Horário (ex: 09:00 às 11:00):", "09:00 às 11:00")
-        if tipo_ag == "Alinhamento Individual (1:1)":
-            dest_ag = st.selectbox("Selecione o PEC:", df_usuarios[~df_usuarios["Pasta"].isin(["CEC", "AT"])]["Nome"].tolist())
-        elif tipo_ag == "Alinhamento por Pasta":
-            dest_ag = st.selectbox("Selecione a Pasta:", ["CONVIVA", "QUALIDADE DA AULA", "DESENVOLVIMENTO CURRICULAR", "MULTIPLICA", "EDUCACAO ESPECIAL", "RECOMPOSICAO"])
-        else:
-            dest_ag = "Toda a Equipe"
-    with ca3:
-        assunto_ag = st.text_input("Assunto / Pauta:", "Alinhamento Semanal de Indicadores GPS")
-        disparar_email_ag = st.checkbox("Disparar convite por e-mail agora", value=True)
-
-    if st.button("Salvar e Distribuir Compromisso", type="primary"):
-        st.session_state["agenda_cec"].append({
-            "Data": data_ag.strftime("%d/%m/%Y"), "Horario": hor_ag,
-            "Tipo": tipo_ag, "Destino": dest_ag, "Assunto": assunto_ag
-        })
-        st.success(f"✅ Compromisso distribuído para **{dest_ag}** em {data_ag.strftime('%d/%m/%Y')} (já visível no Planner Mensal)!")
-
-        if disparar_email_ag and "COLE_AQUI" not in SENHA_APP_GMAIL:
-            if dest_ag == "Toda a Equipe":
-                emails_dest = df_usuarios["Email"].dropna().tolist()
-            elif dest_ag in ["CONVIVA", "QUALIDADE DA AULA", "DESENVOLVIMENTO CURRICULAR", "MULTIPLICA", "EDUCACAO ESPECIAL", "RECOMPOSICAO"]:
-                emails_dest = df_usuarios[df_usuarios["Pasta"].apply(mapear_pasta_chave) == dest_ag]["Email"].dropna().tolist()
-            else:
-                emails_dest = df_usuarios[df_usuarios["Nome"] == dest_ag]["Email"].dropna().tolist()
-            try:
-                msg = EmailMessage()
-                msg["Subject"] = f"📅 Convocação / Alinhamento CEC — {assunto_ag} ({data_ag.strftime('%d/%m/%Y')})"
-                msg["From"] = EMAIL_DISPARADOR
-                msg["To"] = ", ".join(emails_dest)
-                msg.set_content(f"Olá,\n\nAgendamento CEC:\nTipo: {tipo_ag}\nData: {data_ag.strftime('%d/%m/%Y')}\nHorário: {hor_ag}\nPauta: {assunto_ag}\n\nEste horário já foi inserido automaticamente no seu Planner Mensal do GPS Pedagógico.")
-                with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
-                    smtp.login(EMAIL_DISPARADOR, SENHA_APP_GMAIL)
-                    smtp.send_message(msg)
-                st.info(f"📧 Convite enviado para: {', '.join(emails_dest)}")
-            except Exception as e:
-                st.error(f"Erro ao enviar e-mail: {e}")
-
-    st.divider()
-    st.subheader("🔑 3. Gestão de Senhas (Resetar para 123)")
-    pec_reset = st.selectbox("Resetar senha de um PEC para provisória (123):", df_usuarios["Email"].dropna().tolist())
-    if st.button("Resetar Senha para 123"):
-        st.session_state["senhas_atualizadas"][pec_reset.strip().lower()] = "123"
-        st.success(f"Senha de {pec_reset} redefinida para `123`.")
-
-    st.divider()
-    st.subheader("📊 4. Relatório de Evidências para Reunião 1:1 (Planos, Agenda, Termos de Visita e Apoio)")
-    lista_nomes_pecs = df_usuarios[~df_usuarios["Pasta"].apply(mapear_pasta_chave).isin(["CEC", "AT"])]["Nome"].dropna().tolist()
-    if lista_nomes_pecs:
-        pec_1a1 = st.selectbox("Selecione o PEC para gerar a Pauta e Evidências do 1:1:", lista_nomes_pecs, key="sel_rel_1a1")
-        row_u = df_usuarios[df_usuarios["Nome"] == pec_1a1].iloc[0]
-        pasta_1a1 = mapear_pasta_chave(row_u.get("Pasta", ""))
-        comp_1a1 = str(row_u.get("Componente", "Todos"))
-
-        planos_pec = [p for p in st.session_state["compromissos_pec"] if p["PEC"] == pec_1a1]
-        visitas_pec = [v for v in st.session_state["visitas"] if v["PEC"] == pec_1a1]
-        enc_pec = [e for e in st.session_state["encaminhamentos"] if e["Origem"] == pec_1a1 or pec_1a1 in e["Destino"]]
-
-        df_sug = df_indicadores.copy()
-        if pasta_1a1 == "DESENVOLVIMENTO CURRICULAR" and normalizar_texto(comp_1a1) not in ["", "TODOS", "NAN", "NONE"]:
-            df_sug_c = df_sug[df_sug["Componente"].apply(normalizar_texto).str.contains(normalizar_texto(comp_1a1), na=False)]
-            if not df_sug_c.empty:
-                df_sug = df_sug_c
-        escolas_sugeridas = df_sug[df_sug["Nivel"].apply(normalizar_texto).str.contains("ABAIXO|INSUFICIENTE|DEFASAGEM", na=False)]["Escola"].unique().tolist()
-        escolas_planejadas = list(set([p["Local"] for p in planos_pec]))
-        escolas_visitadas = list(set([v["Escola"] for v in visitas_pec]))
-
-        c_m1, c_m2, c_m3, c_m4 = st.columns(4)
-        c_m1.metric("Ações no Plano / Agenda", len(planos_pec))
-        c_m2.metric("Termos de Visita", len([v for v in visitas_pec if v.get("Tipo_Termo") == "Termo de Visita"]))
-        c_m3.metric("Termos de Apoio Presencial", len([v for v in visitas_pec if v.get("Tipo_Termo") == "Termo de Apoio Presencial"]))
-        c_m4.metric("Encaminhamentos Ativos", len(enc_pec))
-
-        st.markdown("##### 🔍 Pontos de Pauta Sugeridos para o Diálogo 1:1:")
-        sem_cobertura = [e for e in escolas_sugeridas if normalizar_texto(e) not in [normalizar_texto(x) for x in escolas_planejadas + escolas_visitadas]]
-        if sem_cobertura:
-            st.warning(f"📌 **Escolas sugeridas pelos indicadores ainda sem previsão no Plano/Termos:** {', '.join(sem_cobertura[:8])}. *(Dialogar no 1:1 sobre o critério de priorização adotado pelo PEC.)*")
-        else:
-            st.success("✅ **Alinhamento de Prioridades:** Todas as escolas sugeridas pelos indicadores constam nos Planos de Trabalho ou Termos registrados.")
-
-        sem_foco_crit = [v for v in visitas_pec if v.get("Foco_Criticos_OK") == "Não"]
-        if sem_foco_crit:
-            st.warning(f"📌 **Atenção Pedagógica nos Termos:** Em {len(sem_foco_crit)} visita(s), o roteiro não registrou atendimento focalizado aos estudantes Abaixo do Básico.")
-
-        t_1a1_1, t_1a1_2 = st.columns(2)
-        with t_1a1_1:
-            st.write("**1. Planos de Trabalho & Agenda Registrados:**")
-            st.dataframe(pd.DataFrame(planos_pec) if planos_pec else pd.DataFrame(columns=["Data", "Natureza", "Local", "Intencionalidade"]), use_container_width=True)
-        with t_1a1_2:
-            st.write("**2. Termos de Visita e de Apoio Presencial Executados:**")
-            st.dataframe(pd.DataFrame(visitas_pec) if visitas_pec else pd.DataFrame(columns=["Data", "Escola", "Tipo_Termo", "Arquivo_Termo", "Foco_Criticos_OK"]), use_container_width=True)
+# --- ABAS DO SISTEMA ---
+abas_nomes = [
+    "📅 1. Calendário & Compromissos",
+    "📋 2. Plano de Trabalho (Mensal)",
+    "🚌 3. Plano de Visitas (Semanal)",
+    "📊 4. Indicadores & Boletins",
+    "🔄 5. Encaminhamentos"
+]
+if
