@@ -18,8 +18,8 @@ st.set_page_config(page_title="GPS — Guia Pedagógico Semanal", page_icon="�
 ID_PLANILHA_GOOGLE = "1v0SdvumxgFhoAH7W1gTJJ_TH50kKB2qa9QaB5ZQMHsU"
 EMAIL_DISPARADOR = "seu.email.sistema@gmail.com"
 SENHA_APP_GMAIL = "COLE_AQUI_AS_16_LETRAS_DO_GMAIL"
-EMAIL_DIRIGENTE = "dirigente@educacao.sp.gov.br"
-EMAIL_CEC = "marcos.yoshiwara@educacao.sp.gov.br"
+EMAIL_DIRIGENTE = "mir@educacao.sp.gov.br"
+EMAIL_CEC = "mir.eec@educacao.sp.gov.br"
 
 def normalizar_texto(txt):
     if pd.isna(txt):
