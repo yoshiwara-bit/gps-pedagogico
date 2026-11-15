@@ -1810,7 +1810,6 @@ with abas[0]:
                         st.rerun()
             if st.button("🧹 Limpar Todos os Agendamentos", use_container_width=True):
                 st.session_state["cronograma_semana"] = []
-    st.session_state["df_atpc_upload"] = pd.DataFrame()
                 st.rerun()
 
     # --- LADO ESQUERDO: PLANNER MENSAL COMPLETO ATUALIZADO EM TEMPO REAL ---
