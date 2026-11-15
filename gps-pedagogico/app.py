@@ -23,7 +23,7 @@ from icalendar import Calendar as ICalCalendar
 st.set_page_config(page_title="GPS — Guia Pedagógico Semanal", page_icon="🧭", layout="wide")
 
 # ==============================================================================
-# CONFIGURAÇÕES DA URE DE MIRACATU (MANTIDAS DO SISTEMA ORIGINAL)
+# CONFIGURAÇÕES DA URE DE MIRACATU
 # ==============================================================================
 ID_PLANILHA_GOOGLE = "1v0SdvumxgFhoAH7W1gTJJ_TH50kKB2qa9QaB5ZQMHsU"
 ID_AGENDA_SEDUC = "1wUt_4qcLgtQhlD6dZM4Ndae8aE0RLHYS-if84-F1zY8"
@@ -164,7 +164,7 @@ def filtrar_indicadores_por_pec(df_ind, pasta_pec, componente_pec, escolas_pec=N
         if tipo_reg == "FREQUENCIA":
             return True
         if tipo_reg == "PLATAFORMA":
-            plat = normalizar_texto(row.get("Plataforma_Critica", "")) + " " + normalizar_texto(row.get("Componente", ""))
+            plat = normalizar_texto(row.get("Subcategoria", "")) + " " + normalizar_texto(row.get("Plataforma_Critica", ""))
             return any(p in plat for p in plats_alvo)
         comp = normalizar_texto(row.get("Componente", ""))
         if comp in ["", "TODOS", "GERAL"]:
@@ -199,7 +199,108 @@ def verificar_status_prazo_data(dt_envio, ano, mes):
         return f"NO PRAZO (Enviado em {dt_envio.strftime('%d/%m/%Y')} | Limite: {limite.strftime('%d/%m/%Y')})"
     return f"FORA DO PRAZO (Enviado em {dt_envio.strftime('%d/%m/%Y')} | Limite: {limite.strftime('%d/%m/%Y')})"
 
-# --- TRADUTOR INTELIGENTE DE PLANILHAS DO DRIVE (AVALIAÇÕES, FREQUÊNCIA, PLATAFORMAS) ---
+# ==============================================================================
+# CONVERSÃO DE PERCENTUAL (DECIMAL -> 0 a 100%) + DETECÇÃO DE PROVA / PERÍODO / NÍVEL
+# ==============================================================================
+def converter_para_percentual(val):
+    if pd.isna(val):
+        return None
+    s = str(val).replace("%", "").replace(",", ".").strip()
+    if not s or s.lower() in ["nan", "none", "-", ""]:
+        return None
+    try:
+        num = float(s)
+        # Se vier como decimal do BI (ex: 0.6033 ou 1.0), converte para 60.33 ou 100.0
+        if 0.0 <= num <= 1.0001:
+            return round(num * 100.0, 1)
+        return round(num, 1)
+    except Exception:
+        return None
+
+def formatar_pct_str(num):
+    if num is None or pd.isna(num):
+        return "-"
+    return f"{num:.1f}%"
+
+def classificar_farol_nivel(pct):
+    if pct is None or pd.isna(pct):
+        return "Sem Dado"
+    if pct <= 40.0:
+        return "🔴 Vermelho (Crítico / Abaixo do Básico)"
+    elif pct <= 60.0:
+        return "🟡 Amarelo (Atenção / Básico)"
+    elif pct <= 80.0:
+        return "🟢 Verde (Adequado)"
+    else:
+        return "🔵 Azul (Avançado)"
+
+def detectar_classificacao_arquivo(nome_arquivo, caminho_pasta=""):
+    ref = normalizar_texto(f"{caminho_pasta} {nome_arquivo}")
+
+    # 1. Tipo Principal
+    if "FREQUENCIA" in ref:
+        tipo = "FREQUENCIA"
+    elif any(k in ref for k in ["PLATAFORMA", "KHAN", "MATIFIC", "SPEAK", "OPEN ENGLISH", "LEIA SP", "REDACAO", "ALURA"]):
+        tipo = "PLATAFORMA"
+    else:
+        tipo = "AVALIACAO"
+
+    # 2. Subcategoria (Prova ou Plataforma)
+    if tipo == "PLATAFORMA":
+        if "KHAN" in ref:
+            sub = "Khan Academy"
+        elif "MATIFIC" in ref:
+            sub = "Matific"
+        elif "SPEAK" in ref:
+            sub = "Speak"
+        elif "OPEN" in ref:
+            sub = "Open English"
+        elif "LEIA" in ref:
+            sub = "Leia SP"
+        elif "REDACAO" in ref:
+            sub = "Redação Paulista"
+        elif "ALURA" in ref:
+            sub = "Alura"
+        else:
+            sub = "Outras Plataformas"
+    elif tipo == "FREQUENCIA":
+        sub = "Frequência Escolar"
+    else:
+        if "PAULISTA" in ref or re.search(r"\bPP\b", ref):
+            sub = "Prova Paulista"
+        elif "SARESP" in ref:
+            sub = "SARESP"
+        elif "SAEB" in ref:
+            sub = "SAEB"
+        elif "ENEM" in ref:
+            sub = "ENEM"
+        elif "DIAGNOSTICA" in ref or "ENTRADA" in ref:
+            sub = "Avaliação Diagnóstica"
+        else:
+            sub = "Outras Avaliações"
+
+    # 3. Período (Bimestre, Ano ou Semana/Mês)
+    m_bim = re.search(r"([1-4])\s*[º°O]?\s*BIM", ref)
+    m_ano = re.search(r"\b(202[3-9])\b", ref)
+    m_sem = re.search(r"SEM(?:ANA)?\s*([0-9]{1,2})", ref)
+    if m_bim:
+        periodo = f"{m_bim.group(1)}º Bimestre" + (f" ({m_ano.group(1)})" if m_ano else "")
+    elif m_ano:
+        periodo = f"Ano {m_ano.group(1)}"
+    elif m_sem:
+        periodo = f"Semana {m_sem.group(1)}"
+    else:
+        periodo = "Geral / Período Atual"
+
+    # 4. Escola pelo nome do arquivo ou pasta
+    escola_pasta = None
+    for esc in ESCOLAS_URE_MIRACATU:
+        if normalizar_texto(esc) in ref or normalizar_texto(esc).replace("EE ", "") in ref:
+            escola_pasta = esc
+            break
+
+    return tipo, sub, periodo, escola_pasta
+
 MAPA_SIGLAS_BI = {
     "MAT": "Matematica",
     "PORT": "Lingua Portuguesa",
@@ -226,142 +327,267 @@ def limpar_nome_escola_bi(nome_bruto):
     s_title = s.title()
     return s_title if s_title.upper().startswith("EE ") else f"EE {s_title}"
 
+# ==============================================================================
+# TRADUTOR INTELIGENTE DE PLANILHAS (ESCOLA -> TURMA -> ESTUDANTE)
+# ==============================================================================
 def padronizar_planilha_bruta(df_raw, nome_arquivo="", pasta_origem=""):
     if df_raw is None or df_raw.empty:
         return pd.DataFrame()
 
-    nome_up = normalizar_texto(nome_arquivo)
-    pasta_up = normalizar_texto(pasta_origem)
+    tipo_ind, subcategoria, periodo_ref, escola_detectada_path = detectar_classificacao_arquivo(nome_arquivo, pasta_origem)
     cols_norm = {normalizar_texto(c): c for c in df_raw.columns}
     siglas_presentes = [c_orig for c_n, c_orig in cols_norm.items() if c_n in MAPA_SIGLAS_BI]
 
-    if siglas_presentes and ("EXPORT TURMA" in cols_norm or "EXPORT ESCOLAS" in cols_norm):
-        escola_detectada = "Geral URE Miracatu"
-        for val in df_raw.iloc[:, 0].dropna().astype(str):
+    # Tenta capturar NM_ESCOLA ou NM_TURMA da linha de rodapé "Filtros aplicados:" do BI SEDUC
+    escola_rodape = None
+    turma_rodape = None
+    for val in df_raw.iloc[:, 0].dropna().astype(str):
+        if "FILTROS APLICADOS" in normalizar_texto(val):
             if "NM_ESCOLA" in val:
                 trecho = val.split("NM_ESCOLA")[1]
                 for sep in [" é ", " = "]:
                     if sep in trecho:
-                        escola_detectada = limpar_nome_escola_bi(trecho.split(sep)[1].split("CD_DIRETORIA")[0].strip())
+                        escola_rodape = limpar_nome_escola_bi(trecho.split(sep)[1].split("CD_DIRETORIA")[0].split("NM_TURMA")[0].strip())
+                        break
+            if "NM_TURMA" in val:
+                trecho_t = val.split("NM_TURMA")[1]
+                for sep in [" é ", " = "]:
+                    if sep in trecho_t:
+                        turma_rodape = trecho_t.split(sep)[1].split("NM_ESCOLA")[0].split("CD_DIRETORIA")[0].strip()
                         break
 
-        avaliacao_nome = "SARESP (Livre)" if "SARESP" in nome_up else ("Prova Paulista" if "PP" in nome_up or "PAULISTA" in nome_up else f"Avaliação ({nome_arquivo})")
-        col_chave = cols_norm.get("EXPORT TURMA") or cols_norm.get("EXPORT ESCOLAS")
-        eh_por_escola = "EXPORT ESCOLAS" in cols_norm
-        col_part = cols_norm.get("(%) PARTICIPACAO")
-        col_alunos = cols_norm.get("TOTAL ALUNOS")
+    escola_padrao = escola_rodape or escola_detectada_path or "Geral URE Miracatu"
+
+    # CASO A: EXPORTAÇÃO PADRÃO BI SEDUC (COM SIGLAS MAT, PORT, ING, HIST, GEO...)
+    if siglas_presentes:
+        col_escola = next((c_orig for c_n, c_orig in cols_norm.items() if "EXPORT ESCOLA" in c_n or c_n == "ESCOLA" or c_n == "NM_ESCOLA"), None)
+        col_turma = next((c_orig for c_n, c_orig in cols_norm.items() if "EXPORT TURMA" in c_n or c_n == "TURMA" or c_n == "NM_TURMA"), None)
+        col_aluno = next((c_orig for c_n, c_orig in cols_norm.items() if any(k in c_n for k in ["ALUNO", "ESTUDANTE", "NOME", "RA"]) and "TOTAL" not in c_n), None)
+        col_part = next((c_orig for c_n, c_orig in cols_norm.items() if "PARTICIPACAO" in c_n or "FREQ" in c_n), None)
+        col_total_al = next((c_orig for c_n, c_orig in cols_norm.items() if "TOTAL ALUNO" in c_n or "ESTUDANTE" == c_n), None)
 
         registros = []
         for _, row in df_raw.iterrows():
-            item_chave = str(row.get(col_chave, "")).strip()
-            if not item_chave or item_chave.lower() in ["nan", "total"] or "Filtros aplicados" in item_chave:
+            # Identifica chave principal da linha e descarta rodapés / linhas vazias
+            valores_linha_str = " ".join([str(v) for v in row.values if pd.notna(v)])
+            if not valores_linha_str.strip() or "Filtros aplicados" in valores_linha_str:
                 continue
 
-            escola_row = limpar_nome_escola_bi(item_chave) if eh_por_escola else escola_detectada
-            turma_row = "Consolidado da Escola" if eh_por_escola else item_chave
-            part_txt = str(row.get(col_part, "0")).replace("%", "").replace(",", ".").strip()
-            try:
-                part_num = float(part_txt)
-            except Exception:
-                part_num = 95.0
+            val_esc = str(row[col_escola]).strip() if col_escola and pd.notna(row[col_escola]) else ""
+            val_tur = str(row[col_turma]).strip() if col_turma and pd.notna(row[col_turma]) else ""
+            val_alu = str(row[col_aluno]).strip() if col_aluno and pd.notna(row[col_aluno]) else ""
 
-            total_al = str(row.get(col_alunos, "-")).strip()
+            if any(x.lower() in ["total", "none", "nan"] for x in [val_esc, val_tur, val_alu] if x):
+                continue
+
+            if col_aluno and val_alu:
+                nivel_gran = "ESTUDANTE"
+                escola_row = limpar_nome_escola_bi(val_esc) if val_esc else escola_padrao
+                turma_row = val_tur if val_tur else (turma_rodape or "Turma Geral")
+                estudante_row = val_alu
+            elif col_turma and val_tur:
+                nivel_gran = "TURMA"
+                escola_row = limpar_nome_escola_bi(val_esc) if val_esc else escola_padrao
+                turma_row = val_tur
+                qtd_al = str(row[col_total_al]).strip() if col_total_al and pd.notna(row[col_total_al]) else "-"
+                estudante_row = f"Consolidado Turma ({qtd_al} alunos)"
+            elif col_escola and val_esc:
+                nivel_gran = "ESCOLA"
+                escola_row = limpar_nome_escola_bi(val_esc)
+                turma_row = "Consolidado da Escola"
+                estudante_row = "Consolidado Escola"
+            else:
+                continue
+
+            part_pct = converter_para_percentual(row[col_part]) if col_part else None
 
             for col_sigla in siglas_presentes:
-                val_acerto = str(row.get(col_sigla, "")).replace("%", "").replace(",", ".").strip()
-                if not val_acerto or val_acerto.lower() in ["nan", "none", ""]:
+                acerto_pct = converter_para_percentual(row[col_sigla])
+                if acerto_pct is None:
                     continue
-                try:
-                    acerto_num = float(val_acerto)
-                except Exception:
-                    continue
-
                 comp_nome = MAPA_SIGLAS_BI[normalizar_texto(col_sigla)]
-                if acerto_num <= 40.0:
-                    nivel_str = "Vermelho (Crítico / Abaixo do Básico)"
-                elif acerto_num <= 60.0:
-                    nivel_str = "Amarelo (Atenção / Básico)"
-                elif acerto_num <= 80.0:
-                    nivel_str = "Verde (Adequado)"
-                else:
-                    nivel_str = "Azul (Avançado)"
-
                 registros.append({
-                    "Tipo_Indicador": "AVALIACAO",
+                    "Tipo_Indicador": tipo_ind,
+                    "Subcategoria": subcategoria,
+                    "Periodo": periodo_ref,
+                    "Nivel_Granularidade": nivel_gran,
                     "Escola": escola_row,
-                    "Avaliacao": avaliacao_nome,
-                    "Etapa": "Ensino Médio" if "SERIE" in turma_row.upper() else ("Anos Finais" if "ANO" in turma_row.upper() else "Todas"),
                     "Turma": turma_row,
-                    "Professor": "Consultar Atribuição / CGP",
-                    "Estudante": f"Turma ({total_al} alunos)",
+                    "Estudante": estudante_row,
                     "Componente": comp_nome,
-                    "Nivel": nivel_str,
-                    "Proficiencia_Nota": f"{acerto_num:.1f}%",
-                    "Valor_Numerico": acerto_num,
-                    "Frequencia": round(part_num, 1),
-                    "Habilidade_Critica": f"Desempenho abaixo da meta ({acerto_num:.1f}%)" if acerto_num <= 60 else "Dentro do esperado",
-                    "Plataforma_Critica": "-"
+                    "Proficiencia_Pct": acerto_pct,
+                    "Participacao_Pct": part_pct,
+                    "Nivel": classificar_farol_nivel(acerto_pct)
                 })
         return pd.DataFrame(registros)
 
-    mapa = {}
-    for col in df_raw.columns:
-        c_low = normalizar_texto(col).lower()
-        if any(k in c_low for k in ["escola", "unidade", "ue"]):
-            mapa[col] = "Escola"
-        elif any(k in c_low for k in ["avaliacao", "exame", "prova", "saresp", "saeb", "enem", "provao", "diagnostica"]):
-            mapa[col] = "Avaliacao"
-        elif "etapa" in c_low or "segmento" in c_low:
-            mapa[col] = "Etapa"
-        elif "turma" in c_low or "serie" in c_low or "ano" in c_low:
-            mapa[col] = "Turma"
-        elif any(k in c_low for k in ["professor", "docente", "regente", "cursista", "multiplicador"]):
-            mapa[col] = "Professor"
-        elif any(k in c_low for k in ["estudante", "aluno", "discente"]):
-            mapa[col] = "Estudante"
-        elif "componente" in c_low or "disciplina" in c_low or "area" in c_low:
-            mapa[col] = "Componente"
-        elif any(k in c_low for k in ["nivel", "proficiencia", "desempenho", "padrao"]):
-            mapa[col] = "Nivel"
-        elif any(k in c_low for k in ["nota", "acerto", "pontuacao", "media", "escore", "uso", "engajamento", "taxa"]):
-            mapa[col] = "Proficiencia_Nota"
-        elif "freq" in c_low:
-            mapa[col] = "Frequencia"
-        elif "habilidade" in c_low or "descritor" in c_low:
-            mapa[col] = "Habilidade_Critica"
-        elif any(k in c_low for k in ["plataforma", "speak", "open english", "khan", "matific", "leia", "redacao", "alura"]):
-            mapa[col] = "Plataforma_Critica"
+    # CASO B: PLANILHAS DE FREQUÊNCIA, PLATAFORMAS (KHAN, MATIFIC, SPEAK, LEIA SP) OU OUTROS FORMATOS
+    col_esc = next((c_orig for c_n, c_orig in cols_norm.items() if any(k in c_n for k in ["ESCOLA", "UNIDADE", "UE"])), None)
+    col_tur = next((c_orig for c_n, c_orig in cols_norm.items() if any(k in c_n for k in ["TURMA", "SERIE", "ANO"])), None)
+    col_alu = next((c_orig for c_n, c_orig in cols_norm.items() if any(k in c_n for k in ["ALUNO", "ESTUDANTE", "DISCENTE", "NOME"]) and "TOTAL" not in c_n), None)
+    col_comp = next((c_orig for c_n, c_orig in cols_norm.items() if any(k in c_n for k in ["COMPONENTE", "DISCIPLINA", "AREA"])), None)
+    col_val = next((c_orig for c_n, c_orig in cols_norm.items() if any(k in c_n for k in ["FREQ", "USO", "ENGAJAMENTO", "TAXA", "ACERTO", "MEDIA", "NOTA", "PERCENTUAL", "PROFICIENCIA", "CONCLUSAO", "ATIVIDADE"])), None)
 
-    df_pad = df_raw.rename(columns=mapa).copy()
+    registros_b = []
+    for _, row in df_raw.iterrows():
+        valores_linha_str = " ".join([str(v) for v in row.values if pd.notna(v)])
+        if not valores_linha_str.strip() or "Filtros aplicados" in valores_linha_str:
+            continue
 
-    if "FREQUENCIA" in pasta_up or "FREQUENCIA" in nome_up:
-        tipo_ind = "FREQUENCIA"
-    elif "PLATAFORMA" in pasta_up or any(p in nome_up for p in ["PLATAFORMA", "SPEAK", "OPEN", "KHAN", "MATIFIC", "LEIA"]):
-        tipo_ind = "PLATAFORMA"
-    else:
-        tipo_ind = "AVALIACAO"
+        val_esc = str(row[col_esc]).strip() if col_esc and pd.notna(row[col_esc]) else ""
+        val_tur = str(row[col_tur]).strip() if col_tur and pd.notna(row[col_tur]) else ""
+        val_alu = str(row[col_alu]).strip() if col_alu and pd.notna(row[col_alu]) else ""
 
-    df_pad["Tipo_Indicador"] = tipo_ind
+        if any(x.lower() in ["total", "none", "nan"] for x in [val_esc, val_tur, val_alu] if x):
+            continue
 
-    for col_req, default_val in [
-        ("Escola", "Geral URE Miracatu"),
-        ("Avaliacao", "SARESP / Prova Paulista" if tipo_ind == "AVALIACAO" else ("Frequência Semanal" if tipo_ind == "FREQUENCIA" else "Plataforma Digital")),
-        ("Etapa", "Todas"),
-        ("Turma", "Geral"),
-        ("Professor", "Docente da Turma"),
-        ("Estudante", "Consolidado"),
-        ("Componente", "Todos"),
-        ("Nivel", "Atenção / Monitorar"),
-        ("Proficiencia_Nota", "-"),
-        ("Frequencia", 85.0),
-        ("Habilidade_Critica", "Acompanhamento Semanal"),
-        ("Plataforma_Critica", nome_arquivo if tipo_ind == "PLATAFORMA" else "-")
-    ]:
-        if col_req not in df_pad.columns:
-            df_pad[col_req] = default_val
+        if col_alu and val_alu:
+            nivel_gran = "ESTUDANTE"
+            escola_row = limpar_nome_escola_bi(val_esc) if val_esc else escola_padrao
+            turma_row = val_tur if val_tur else (turma_rodape or "Turma Geral")
+            estudante_row = val_alu
+        elif col_tur and val_tur:
+            nivel_gran = "TURMA"
+            escola_row = limpar_nome_escola_bi(val_esc) if val_esc else escola_padrao
+            turma_row = val_tur
+            estudante_row = "Consolidado Turma"
+        elif col_esc and val_esc:
+            nivel_gran = "ESCOLA"
+            escola_row = limpar_nome_escola_bi(val_esc)
+            turma_row = "Consolidado da Escola"
+            estudante_row = "Consolidado Escola"
+        else:
+            continue
 
-    return df_pad
+        val_pct = converter_para_percentual(row[col_val]) if col_val else None
+        if val_pct is None:
+            continue
 
+        comp_row = str(row[col_comp]).strip() if col_comp and pd.notna(row[col_comp]) else ("Frequência" if tipo_ind == "FREQUENCIA" else subcategoria)
+        registros_b.append({
+            "Tipo_Indicador": tipo_ind,
+            "Subcategoria": subcategoria,
+            "Periodo": periodo_ref,
+            "Nivel_Granularidade": nivel_gran,
+            "Escola": escola_row,
+            "Turma": turma_row,
+            "Estudante": estudante_row,
+            "Componente": comp_row,
+            "Proficiencia_Pct": val_pct,
+            "Participacao_Pct": val_pct if tipo_ind == "FREQUENCIA" else None,
+            "Nivel": classificar_farol_nivel(val_pct)
+        })
+
+    return pd.DataFrame(registros_b)
+
+# ==============================================================================
+# ESTILIZAÇÃO VISUAL DO FAROL (CORES POR PROFICIÊNCIA / FREQUÊNCIA / USO)
+# ==============================================================================
+def estilo_celula_farol(val):
+    if pd.isna(val):
+        return ""
+    s = str(val).replace("%", "").replace(",", ".").strip()
+    try:
+        num = float(s)
+        if num <= 40.0:
+            return "background-color: #FFCDD2; color: #B71C1C; font-weight: bold;"  # Vermelho
+        elif num <= 60.0:
+            return "background-color: #FFF9C4; color: #F57F17; font-weight: bold;"  # Amarelo
+        elif num <= 80.0:
+            return "background-color: #C8E6C9; color: #1B5E20; font-weight: bold;"  # Verde
+        else:
+            return "background-color: #BBDEFB; color: #0D47A1; font-weight: bold;"  # Azul
+    except Exception:
+        if "Vermelho" in s or "Crítico" in s:
+            return "background-color: #FFCDD2; color: #B71C1C; font-weight: bold;"
+        elif "Amarelo" in s or "Atenção" in s:
+            return "background-color: #FFF9C4; color: #F57F17; font-weight: bold;"
+        elif "Verde" in s or "Adequado" in s:
+            return "background-color: #C8E6C9; color: #1B5E20; font-weight: bold;"
+        elif "Azul" in s or "Avançado" in s:
+            return "background-color: #BBDEFB; color: #0D47A1; font-weight: bold;"
+        return ""
+
+def renderizar_tabela_hierarquica(df_sub, titulo_secao, rotulo_metrica="Média (%)"):
+    if df_sub.empty:
+        st.info(f"Nenhum dado carregado para **{titulo_secao}**. Deposite as planilhas na pasta correspondente no Google Drive.")
+        return
+
+    st.caption("🎨 **Legenda do Farol:** 🔴 **0% a 40%** (Crítico) | 🟡 **40,1% a 60%** (Atenção) | 🟢 **60,1% a 80%** (Adequado) | 🔵 **80,1% a 100%** (Avançado)")
+
+    # 1. VISÃO GERAL POR ESCOLA (Sempre consolidada por Escola, nunca misturada por turma)
+    st.markdown(f"#### 🏫 Visão Geral por Escola — {titulo_secao}")
+    df_esc_base = df_sub[df_sub["Nivel_Granularidade"] == "ESCOLA"]
+    if df_esc_base.empty:
+        df_esc_base = df_sub
+
+    piv_esc = df_esc_base.pivot_table(
+        index="Escola",
+        columns="Componente",
+        values="Proficiencia_Pct",
+        aggfunc="mean"
+    ).round(1)
+    piv_esc[rotulo_metrica] = piv_esc.mean(axis=1).round(1)
+    cols_ord = [rotulo_metrica] + [c for c in piv_esc.columns if c != rotulo_metrica]
+    piv_esc = piv_esc[cols_ord].reset_index()
+
+    cols_num_esc = [c for c in piv_esc.columns if c != "Escola"]
+    styler_esc = piv_esc.style.map(estilo_celula_farol, subset=cols_num_esc).format({c: "{:.1f}%" for c in cols_num_esc}, na_rep="-")
+    st.dataframe(styler_esc, use_container_width=True, hide_index=True)
+
+    # 2. DRILL-DOWN: ENTRAR NA ESCOLA -> GERAL POR TURMA DA ESCOLA
+    escolas_disp = sorted(df_sub["Escola"].dropna().unique().tolist())
+    escola_escolhida = st.selectbox(f"🔍 Entrar na Escola (ver Turmas e Estudantes):", ["Selecione uma escola..."] + escolas_disp, key=f"sel_esc_{titulo_secao}")
+
+    if escola_escolhida != "Selecione uma escola...":
+        df_da_escola = df_sub[df_sub["Escola"] == escola_escolhida]
+        st.markdown(f"#### 📋 Geral por Turma — {escola_escolhida}")
+
+        df_turma_base = df_da_escola[df_da_escola["Nivel_Granularidade"].isin(["TURMA", "ESTUDANTE"])]
+        if not df_turma_base.empty:
+            piv_tur = df_turma_base.pivot_table(
+                index="Turma",
+                columns="Componente",
+                values="Proficiencia_Pct",
+                aggfunc="mean"
+            ).round(1)
+            piv_tur[rotulo_metrica] = piv_tur.mean(axis=1).round(1)
+            cols_ord_t = [rotulo_metrica] + [c for c in piv_tur.columns if c != rotulo_metrica]
+            piv_tur = piv_tur[cols_ord_t].reset_index()
+
+            cols_num_tur = [c for c in piv_tur.columns if c != "Turma"]
+            styler_tur = piv_tur.style.map(estilo_celula_farol, subset=cols_num_tur).format({c: "{:.1f}%" for c in cols_num_tur}, na_rep="-")
+            st.dataframe(styler_tur, use_container_width=True, hide_index=True)
+
+            # 3. DRILL-DOWN: ENTRAR NA TURMA -> VISÃO ESTUDANTE POR ESTUDANTE (GERAL DA TURMA)
+            turmas_disp = sorted([t for t in df_turma_base["Turma"].dropna().unique().tolist() if "Consolidado" not in t])
+            if turmas_disp:
+                turma_escolhida = st.selectbox(f"🎓 Entrar na Turma (Visão Estudante por Estudante):", ["Selecione uma turma..."] + turmas_disp, key=f"sel_tur_{titulo_secao}_{escola_escolhida}")
+                if turma_escolhida != "Selecione uma turma...":
+                    df_alunos = df_da_escola[(df_da_escola["Turma"] == turma_escolhida) & (df_da_escola["Nivel_Granularidade"] == "ESTUDANTE")]
+                    st.markdown(f"#### 🧑‍🎓 Visão Estudante por Estudante — {turma_escolhida}")
+                    if not df_alunos.empty:
+                        piv_alu = df_alunos.pivot_table(
+                            index="Estudante",
+                            columns="Componente",
+                            values="Proficiencia_Pct",
+                            aggfunc="mean"
+                        ).round(1)
+                        piv_alu[rotulo_metrica] = piv_alu.mean(axis=1).round(1)
+                        cols_ord_a = [rotulo_metrica] + [c for c in piv_alu.columns if c != rotulo_metrica]
+                        piv_alu = piv_alu[cols_ord_a].reset_index()
+
+                        cols_num_alu = [c for c in piv_alu.columns if c != "Estudante"]
+                        styler_alu = piv_alu.style.map(estilo_celula_farol, subset=cols_num_alu).format({c: "{:.1f}%" for c in cols_num_alu}, na_rep="-")
+                        st.dataframe(styler_alu, use_container_width=True, hide_index=True)
+                    else:
+                        st.info("Para esta turma só foi carregada a planilha consolidada por turma. Suba a planilha nominal de estudantes da turma no Drive para abrir a visão estudante por estudante.")
+        else:
+            st.info("Para esta escola só foi carregada a planilha consolidada geral da escola. Suba as planilhas por turma/estudante na pasta desta escola no Drive.")
+
+# ==============================================================================
+# CARREGAMENTO DE PLANILHAS GOOGLE E DRIVE
+# ==============================================================================
 @st.cache_data(ttl=60)
 def carregar_aba(nome_aba):
     try:
@@ -645,15 +871,15 @@ def gerar_docx_plano(nome_pec, email_pec, pasta_pec, comp_pec, escola_sel, seman
         doc.add_heading("2. Indicadores Prioritários da Sua Pasta de Atuação (Avaliações, Frequência e Plataformas)", level=2)
         t_ind = doc.add_table(rows=1, cols=5)
         t_ind.style = "Table Grid"
-        for idx, col_n in enumerate(["Escola", "Tipo / Avaliação", "Turma / Componente", "Resultado / Nível", "Plataforma / Observação"]):
+        for idx, col_n in enumerate(["Escola", "Subcategoria / Período", "Turma / Estudante", "Componente", "Resultado / Farol"]):
             t_ind.rows[0].cells[idx].text = col_n
         for _, r_i in df_prioridades_pec.head(15).iterrows():
             rc = t_ind.add_row().cells
             rc[0].text = str(r_i.get("Escola", "-"))
-            rc[1].text = str(r_i.get("Avaliacao", "-"))
-            rc[2].text = f"{r_i.get('Turma', '-')} | {r_i.get('Componente', '-')}"
-            rc[3].text = f"{r_i.get('Proficiencia_Nota', '-')} ({r_i.get('Nivel', '-')})"
-            rc[4].text = str(r_i.get("Plataforma_Critica", "-"))
+            rc[1].text = f"{r_i.get('Subcategoria', '-')} ({r_i.get('Periodo', '-')})"
+            rc[2].text = f"{r_i.get('Turma', '-')} | {r_i.get('Estudante', '-')}"
+            rc[3].text = str(r_i.get("Componente", "-"))
+            rc[4].text = f"{formatar_pct_str(r_i.get('Proficiencia_Pct'))} - {r_i.get('Nivel', '-')}"
 
     if obs_texto.strip():
         doc.add_heading("3. Pautas Formativas, Diagnóstico e Devolutivas", level=2)
@@ -693,7 +919,7 @@ def enviar_email_gps(destinatarios, assunto, corpo_texto, anexo_bytes, nome_anex
         return False, f"Falha no envio do e-mail: {e}"
 
 # ==============================================================================
-# AUTENTICAÇÃO E SESSÃO (LÊ DADOS DE CADA PASTA E PEC DO GOOGLE SHEETS)
+# AUTENTICAÇÃO E SESSÃO
 # ==============================================================================
 if "autenticado" not in st.session_state:
     st.session_state["autenticado"] = False
@@ -772,7 +998,7 @@ if not st.session_state["autenticado"]:
     st.stop()
 
 # ==============================================================================
-# CARREGAMENTO GLOBAL DOS DADOS DO DRIVE (PARA TODAS AS ABAS)
+# CARREGAMENTO GLOBAL DOS DADOS DO DRIVE
 # ==============================================================================
 pasta_atual = st.session_state["usuario_pasta"]
 comp_atual = st.session_state["usuario_componente"]
@@ -811,11 +1037,11 @@ with st.sidebar:
         st.rerun()
 
 st.title("🧭 GPS — Guia Pedagógico Semanal")
-st.caption("Planejamento, Indicadores por Pasta de Atuação e Acompanhamento de Visitas — URE de Miracatu")
+st.caption("Planejamento, Indicadores Hierárquicos (Escola → Turma → Estudante) e Acompanhamento — URE de Miracatu")
 
 lista_abas = [
     "📋 Plano de Trabalho & Exportação",
-    "📊 Indicadores, Plataformas & Frequência",
+    "📊 Indicadores (Avaliações, Plataformas & Frequência)",
     "📅 Agenda SEDUC, CEC & Feriados",
     "📚 Diretrizes das Pastas (Res. SEDUC 01/2026)"
 ]
@@ -872,7 +1098,7 @@ with abas[0]:
 
     df_prio_word = pd.DataFrame()
     if not df_ind_usuario.empty:
-        df_prio_word = df_ind_usuario[df_ind_usuario["Nivel"].astype(str).str.contains("Vermelho|Amarelo|Abaixo|Atenção", case=False, na=False)]
+        df_prio_word = df_ind_usuario[df_ind_usuario["Proficiencia_Pct"] <= 60.0]
 
     docx_buf = gerar_docx_plano(
         st.session_state["usuario_nome"],
@@ -929,55 +1155,84 @@ with abas[0]:
             else:
                 st.success("✅ Todas as escolas previstas no seu Plano de Trabalho possuem Termo de Visita registrado no Drive.")
 
-# --- ABA 2: INDICADORES, PLATAFORMAS & FREQUÊNCIA ---
+# --- ABA 2: INDICADORES HIERÁRQUICOS (AVALIAÇÕES, PLATAFORMAS E FREQUÊNCIA) ---
 with abas[1]:
     st.subheader(f"Indicadores Pedagógicos — {pasta_atual} ({comp_atual})")
     if not eh_cec_ou_at:
         regras_info = obter_regras_atuacao_pec(pasta_atual, comp_atual)
         if regras_info:
-            st.info(f"🎯 **Filtro automático da sua pasta de atuação:** Componentes `{', '.join(regras_info['componentes'])}` | Plataformas `{', '.join(regras_info['plataformas'])}` + Frequência Semanal.")
+            st.info(f"🎯 **Filtro automático da sua pasta de atuação:** Componentes `{', '.join(regras_info['componentes'])}` | Plataformas `{', '.join(regras_info['plataformas'])}` + Frequência.")
 
     col_drv, col_up = st.columns([2, 1])
     with col_drv:
         if "COLE_AQUI" in GOOGLE_DRIVE_API_KEY:
             st.warning("Configure `GOOGLE_DRIVE_API_KEY` nos Secrets do Streamlit para leitura automática das pastas do Google Drive.")
         else:
-            st.success(f"📂 {qtd_arqs_drive} arquivo(s) sincronizado(s) do Google Drive (Avaliações SARESP livre/PP, Frequência Semanal e Plataformas).")
+            st.success(f"📂 {qtd_arqs_drive} arquivo(s) sincronizado(s) do Google Drive.")
 
     with col_up:
-        arquivo_bi = st.file_uploader("Testar/Visualizar planilha avulsa (.xlsx / .csv):", type=["xlsx", "csv"])
+        arquivo_bi = st.file_uploader("Testar planilha avulsa (.xlsx / .csv):", type=["xlsx", "csv"])
         if arquivo_bi is not None:
             df_raw_up = pd.read_csv(arquivo_bi) if arquivo_bi.name.endswith(".csv") else pd.read_excel(arquivo_bi)
             df_pad_up = padronizar_planilha_bruta(df_raw_up, arquivo_bi.name)
             df_ind_usuario = pd.concat([df_ind_usuario, df_pad_up], ignore_index=True)
 
-    if not df_ind_usuario.empty:
-        sub_aval, sub_freq, sub_plat = st.tabs(["📝 Avaliações (SARESP / PP / Diagnóstica)", "🏫 Frequência Semanal", "💻 Plataformas Digitais"])
+    sub_aval, sub_plat, sub_freq = st.tabs([
+        "📝 Avaliações (Prova Paulista, SARESP, SAEB, ENEM, Diagnóstica)",
+        "💻 Plataformas Digitais (Khan, Matific, Speak, Leia SP...)",
+        "🏫 Frequência Escolar"
+    ])
 
-        with sub_aval:
-            df_av = df_ind_usuario[df_ind_usuario["Tipo_Indicador"] == "AVALIACAO"]
-            if not df_av.empty:
-                esc_sel = st.selectbox("Filtrar Escola (Avaliações):", ["Todas"] + sorted(df_av["Escola"].dropna().unique().tolist()), key="f_esc_av")
-                df_av_show = df_av if esc_sel == "Todas" else df_av[df_av["Escola"] == esc_sel]
-                st.dataframe(df_av_show.drop(columns=["Tipo_Indicador", "Valor_Numerico"], errors="ignore"), use_container_width=True)
+    # 1. SUB-ABA AVALIAÇÕES
+    with sub_aval:
+        df_av = df_ind_usuario[df_ind_usuario["Tipo_Indicador"] == "AVALIACAO"] if not df_ind_usuario.empty else pd.DataFrame()
+        c_av1, c_av2 = st.columns(2)
+        with c_av1:
+            tipo_prova = st.selectbox(
+                "Selecione a Avaliação:",
+                ["Prova Paulista", "SARESP", "SAEB", "ENEM", "Avaliação Diagnóstica", "Todas as Avaliações"]
+            )
+        with c_av2:
+            if tipo_prova == "Prova Paulista":
+                periodo_filtro = st.selectbox("Bimestre (Prova Paulista):", ["Todos os Bimestres", "1º Bimestre", "2º Bimestre", "3º Bimestre", "4º Bimestre"])
+            elif tipo_prova in ["SARESP", "SAEB", "ENEM", "Avaliação Diagnóstica"]:
+                anos_disp = sorted(df_av["Periodo"].dropna().unique().tolist()) if not df_av.empty else []
+                periodo_filtro = st.selectbox(f"Ano / Edição ({tipo_prova}):", ["Todos os Anos / Edições"] + anos_disp)
             else:
-                st.info("Nenhum dado de avaliação encontrado para esta seleção.")
+                periodo_filtro = "Todos"
 
-        with sub_freq:
-            df_fr = df_ind_usuario[df_ind_usuario["Tipo_Indicador"] == "FREQUENCIA"]
-            if not df_fr.empty:
-                st.dataframe(df_fr.drop(columns=["Tipo_Indicador", "Valor_Numerico"], errors="ignore"), use_container_width=True)
-            else:
-                st.info("Nenhuma planilha de frequência semanal carregada ainda.")
+        df_av_filt = df_av.copy()
+        if not df_av_filt.empty:
+            if tipo_prova != "Todas as Avaliações":
+                df_av_filt = df_av_filt[df_av_filt["Subcategoria"] == tipo_prova]
+            if not periodo_filtro.startswith("Todos"):
+                df_av_filt = df_av_filt[df_av_filt["Periodo"].str.contains(periodo_filtro, case=False, na=False)]
 
-        with sub_plat:
-            df_pl = df_ind_usuario[df_ind_usuario["Tipo_Indicador"] == "PLATAFORMA"]
-            if not df_pl.empty:
-                st.dataframe(df_pl.drop(columns=["Tipo_Indicador", "Valor_Numerico"], errors="ignore"), use_container_width=True)
-            else:
-                st.info("Nenhuma planilha de plataformas digitais carregada ainda.")
-    else:
-        st.info("Deposite as planilhas nas pastas do Google Drive para visualizar os indicadores filtrados automaticamente.")
+        renderizar_tabela_hierarquica(df_av_filt, f"{tipo_prova} ({periodo_filtro})", "Proficiência Média (%)")
+
+    # 2. SUB-ABA PLATAFORMAS
+    with sub_plat:
+        df_pl = df_ind_usuario[df_ind_usuario["Tipo_Indicador"] == "PLATAFORMA"] if not df_ind_usuario.empty else pd.DataFrame()
+        plats_lista = ["Todas as Plataformas", "Khan Academy", "Matific", "Speak", "Open English", "Leia SP", "Redação Paulista", "Alura"]
+        plat_escolhida = st.selectbox("Selecione a Plataforma Digital:", plats_lista)
+
+        df_pl_filt = df_pl.copy()
+        if not df_pl_filt.empty and plat_escolhida != "Todas as Plataformas":
+            df_pl_filt = df_pl_filt[df_pl_filt["Subcategoria"] == plat_escolhida]
+
+        renderizar_tabela_hierarquica(df_pl_filt, f"Plataforma — {plat_escolhida}", "Engajamento / Uso (%)")
+
+    # 3. SUB-ABA FREQUÊNCIA
+    with sub_freq:
+        df_fr = df_ind_usuario[df_ind_usuario["Tipo_Indicador"] == "FREQUENCIA"] if not df_ind_usuario.empty else pd.DataFrame()
+        periodos_fr = sorted(df_fr["Periodo"].dropna().unique().tolist()) if not df_fr.empty else []
+        per_fr_sel = st.selectbox("Período / Semana de Frequência:", ["Todos os Períodos"] + periodos_fr)
+
+        df_fr_filt = df_fr.copy()
+        if not df_fr_filt.empty and per_fr_sel != "Todos os Períodos":
+            df_fr_filt = df_fr_filt[df_fr_filt["Periodo"] == per_fr_sel]
+
+        renderizar_tabela_hierarquica(df_fr_filt, f"Frequência Escolar ({per_fr_sel})", "Frequência Média (%)")
 
 # --- ABA EXCLUSIVA DO CEC / AT: CONFRONTO & FECHAMENTO MENSAL ---
 idx_proxima_aba = 2
