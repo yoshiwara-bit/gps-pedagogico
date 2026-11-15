@@ -932,9 +932,19 @@ def calcular_metricas_por_escola_pos_filtro(df_filtrado, criterio_chave, nome_cr
     grp["Farol"] = grp["Indicador_Medio_Pct"].apply(classificar_farol_nivel)
     return grp
 
-def obter_ranking_escolas_prioritarias(df_ind, pasta_pec, escolas_delimitadas, criterio_chave="TODOS", df_recomp_sheets=None, ano_ref=None, mes_ref=None, nome_crit_label=""):
+def obter_ranking_escolas_prioritarias(
+    df_ind,
+    pasta_pec,
+    escolas_delimitadas,
+    criterio_chave="TODOS",
+    df_recomp_sheets=None,
+    ano_ref=None,
+    mes_ref=None,
+    nome_crit_label="",
+    componente_filtro="Todos os Componentes"
+):
     # Recomposição com lista pré-estabelecida quando o filtro geral "TODOS" está ativo
-    if pasta_pec == "RECOMPOSICAO" and criterio_chave == "TODOS" and df_recomp_sheets is not None and not df_recomp_sheets.empty:
+    if pasta_pec == "RECOMPOSICAO" and criterio_chave == "TODOS" and componente_filtro == "Todos os Componentes" and df_recomp_sheets is not None and not df_recomp_sheets.empty:
         cols_r = {normalizar_texto(c): c for c in df_recomp_sheets.columns}
         col_esc_r = next((v for k, v in cols_r.items() if "ESCOLA" in k or "UNIDADE" in k), None)
         if col_esc_r:
@@ -948,8 +958,25 @@ def obter_ranking_escolas_prioritarias(df_ind, pasta_pec, escolas_delimitadas, c
             return contagem.rename(columns={"Escola_Oficial": "Escola"})
 
     df_filtrado = filtrar_base_por_criterio_prioridade(df_ind, criterio_chave, ano_ref=ano_ref, mes_ref=mes_ref)
-    df_metricas = calcular_metricas_por_escola_pos_filtro(df_filtrado, criterio_chave, nome_crit_label=nome_crit_label)
-    rot_label = nome_crit_label or criterio_chave
+
+    if componente_filtro and componente_filtro != "Todos os Componentes" and not df_filtrado.empty:
+        comp_f_norm = normalizar_texto(componente_filtro)
+        df_filtrado = df_filtrado[
+            df_filtrado["Componente"].apply(
+                lambda x: normalizar_texto(x) == comp_f_norm or comp_f_norm in normalizar_texto(x)
+            )
+        ]
+
+    rot_base = nome_crit_label or criterio_chave
+    rot_label = (
+        f"{rot_base} — {componente_filtro}"
+        if (componente_filtro and componente_filtro != "Todos os Componentes")
+        else rot_base
+    )
+
+    df_metricas = calcular_metricas_por_escola_pos_filtro(
+        df_filtrado, criterio_chave, nome_crit_label=rot_label
+    )
 
     # PEC Qualidade da Aula: restringe ESTRITAMENTE às suas escolas de acompanhamento conforme o Sheets
     if pasta_pec == "QUALIDADE DA AULA":
@@ -1190,7 +1217,7 @@ def renderizar_html_planner_mensal(ano, mes, eventos_por_dia):
         html += "</tr>"
 
     html += "</tbody></table></div>"
-    return html
+    return "\n".join(linha.lstrip() for linha in html.splitlines() if linha.strip())
 
 # ==============================================================================
 # ESTILIZAÇÃO VISUAL DO FAROL (CORES POR PROFICIÊNCIA / FREQUÊNCIA / USO)
@@ -1658,7 +1685,7 @@ def renderizar_preview_plano_html(nome_pec, email_pec, pasta_pec, comp_pec, esco
         <div style="border:1px solid #e2e8f0;background:#f8fafc;padding:10px;border-radius:4px;font-size:13px;">{obs_fmt}</div>
         """
 
-    return f"""
+    html_final = f"""
     <div style="background:#ffffff;border:1px solid #cbd5e1;border-radius:8px;padding:24px;box-shadow:0 2px 8px rgba(0,0,0,0.06);font-family:'Segoe UI',Arial,sans-serif;color:#1e293b;">
         <div style="text-align:center;border-bottom:2px solid #1e3a8a;padding-bottom:10px;margin-bottom:16px;">
             <div style="font-size:13px;font-weight:bold;">SECRETARIA DA EDUCAÇÃO DO ESTADO DE SÃO PAULO</div>
@@ -1692,6 +1719,7 @@ def renderizar_preview_plano_html(nome_pec, email_pec, pasta_pec, comp_pec, esco
         </div>
     </div>
     """
+    return "\n".join(linha.lstrip() for linha in html_final.splitlines() if linha.strip())
 
 def gerar_docx_plano(nome_pec, email_pec, pasta_pec, comp_pec, escola_sel, semana_str, cronograma_dias, obs_texto, df_prioridades_pec=None):
     doc = Document()
@@ -1996,7 +2024,31 @@ with abas[0]:
             help="Selecione o indicador (Prova Paulista 3º Bimestre, SARESP, Frequência, Plataforma ou Todos) para listar abaixo as escolas prioritárias pós-filtro."
         )
 
-        # Calcula o ranking pós-filtro conforme o indicador escolhido (usando a Prova Paulista mais atual do período)
+        # Base filtrada pelo indicador para listar dinamicamente os componentes disponíveis
+        df_base_indicador = filtrar_base_por_criterio_prioridade(
+            df_ind_usuario,
+            criterio_prio_sel,
+            ano_ref=ano_plano,
+            mes_ref=mes_plano
+        )
+
+        componentes_disp = ["Todos os Componentes"]
+        if not df_base_indicador.empty and "Componente" in df_base_indicador.columns:
+            comps_unicos = sorted([
+                str(c).strip()
+                for c in df_base_indicador["Componente"].dropna().unique().tolist()
+                if str(c).strip() and str(c).strip().lower() not in ["nan", "none", "frequência", "frequencia"]
+            ])
+            componentes_disp.extend(comps_unicos)
+
+        comp_filtro_sel = st.selectbox(
+            "📚 Filtrar por Componente Curricular (recalcula prioridade):",
+            options=componentes_disp,
+            key="filtro_componente_prioridade_live",
+            help="Filtre por componente específico (ex.: Matemática, Língua Portuguesa) para recalcular o ranking das escolas e liberar o filtro por turma."
+        )
+
+        # Calcula o ranking pós-filtro conforme Indicador + Componente escolhidos
         df_ranking_prio = obter_ranking_escolas_prioritarias(
             df_ind_usuario,
             pasta_atual,
@@ -2005,7 +2057,8 @@ with abas[0]:
             df_recomp_sheets=df_recomposicao_sheets,
             ano_ref=ano_plano,
             mes_ref=mes_plano,
-            nome_crit_label=opcoes_criterio_dict.get(criterio_prio_sel, "")
+            nome_crit_label=opcoes_criterio_dict.get(criterio_prio_sel, ""),
+            componente_filtro=comp_filtro_sel
         )
 
         # Monta lista pós-filtro com rótulos ricos mostrando posição de prioridade e índice do indicador
@@ -2066,13 +2119,89 @@ with abas[0]:
         )
         escola_sel_form = mapa_rotulo_para_escola[rotulo_escolhido]
 
-        # Exibe o diagnóstico pós-filtro da escola selecionada
+        # Exibe o diagnóstico pós-filtro da escola selecionada (Indicador + Componente)
         if not df_ranking_prio.empty and escola_sel_form in df_ranking_prio["Escola"].values:
             linha_diag = df_ranking_prio[df_ranking_prio["Escola"] == escola_sel_form].iloc[0]
-            st.caption(f"📊 **Diagnóstico Pós-Filtro ({opcoes_criterio_dict[criterio_prio_sel]}):** {linha_diag.get('Prioridade', '')} lugar — {linha_diag.get('Detalhe_Indicador', '')}")
+            rot_comp_diag = f" | {comp_filtro_sel}" if comp_filtro_sel != "Todos os Componentes" else ""
+            st.caption(
+                f"📊 **Diagnóstico Pós-Filtro ({opcoes_criterio_dict[criterio_prio_sel]}{rot_comp_diag}):** "
+                f"{linha_diag.get('Prioridade', '')} lugar — {linha_diag.get('Detalhe_Indicador', '')}"
+            )
 
-        # Identificação automática dos dias e horários de ATPC a partir do Google Drive / Sheets
-        atpcs_da_escola = obter_atpcs_escola(df_atpc_global, escola_sel_form, comp_atual)
+        # Filtro em cascata por Turma da Escola selecionada (ranqueada por criticidade)
+        turma_sel_form = "Todas as Turmas"
+        df_base_comp_turma = df_base_indicador.copy()
+        if comp_filtro_sel != "Todos os Componentes" and not df_base_comp_turma.empty:
+            comp_f_norm = normalizar_texto(comp_filtro_sel)
+            df_base_comp_turma = df_base_comp_turma[
+                df_base_comp_turma["Componente"].apply(
+                    lambda x: normalizar_texto(x) == comp_f_norm or comp_f_norm in normalizar_texto(x)
+                )
+            ]
+
+        if not df_base_comp_turma.empty and escola_sel_form not in ["URE Miracatu", "Reunião Virtual / EFAPE / SEDUC"]:
+            esc_norm_sel = normalizar_texto(escola_sel_form)
+            df_esc_turmas = df_base_comp_turma[
+                (df_base_comp_turma["Escola"].apply(lambda x: esc_norm_sel in normalizar_texto(x) or normalizar_texto(x) in esc_norm_sel))
+                & (df_base_comp_turma["Nivel_Granularidade"].isin(["TURMA", "ESTUDANTE"]))
+                & (~df_base_comp_turma["Turma"].astype(str).str.contains("Consolidado", case=False, na=False))
+            ].copy()
+
+            if not df_esc_turmas.empty:
+                df_nivel_tur = df_esc_turmas[df_esc_turmas["Nivel_Granularidade"] == "TURMA"]
+                base_agg_tur = df_nivel_tur if not df_nivel_tur.empty else df_esc_turmas
+
+                df_rank_turmas = (
+                    base_agg_tur.groupby("Turma", as_index=False)
+                    .agg(Media_Pct=("Proficiencia_Pct", "mean"))
+                    .sort_values(by=["Media_Pct", "Turma"], ascending=[True, True])
+                    .reset_index(drop=True)
+                )
+                df_rank_turmas["Media_Pct"] = df_rank_turmas["Media_Pct"].round(1)
+
+                mapa_rotulo_turma = {"Todas as Turmas (Atuação Geral na Escola)": "Todas as Turmas"}
+                opcoes_turmas_rotulos = ["Todas as Turmas (Atuação Geral na Escola)"]
+
+                for idx_t, r_t in df_rank_turmas.iterrows():
+                    t_nome = str(r_t["Turma"]).strip()
+                    t_pct = r_t["Media_Pct"]
+                    t_farol = classificar_farol_nivel(t_pct)
+                    t_ico = "🔴" if "Vermelho" in t_farol else ("🟡" if "Amarelo" in t_farol else ("🟢" if "Verde" in t_farol else "🔵"))
+                    rot_t = f"{idx_t + 1}º Prioritária | {t_nome} ({t_pct:.1f}% {t_ico})"
+                    opcoes_turmas_rotulos.append(rot_t)
+                    mapa_rotulo_turma[rot_t] = t_nome
+
+                rot_turma_escolhida = st.selectbox(
+                    "🎓 Filtrar por Turma da Escola (Pós-Filtro):",
+                    options=opcoes_turmas_rotulos,
+                    key=f"turma_lancamento_live_{escola_sel_form}_{comp_filtro_sel}"
+                )
+                turma_sel_form = mapa_rotulo_turma[rot_turma_escolhida]
+
+                if turma_sel_form != "Todas as Turmas":
+                    df_det_turma = df_esc_turmas[df_esc_turmas["Turma"] == turma_sel_form]
+                    media_t = round(df_det_turma["Proficiencia_Pct"].mean(), 1)
+                    farol_t = classificar_farol_nivel(media_t)
+                    profs_t = [
+                        p for p in df_det_turma["Professor"].dropna().unique().tolist()
+                        if str(p).strip() and str(p).strip().lower() not in ["nan", "none", "-"]
+                    ] if "Professor" in df_det_turma.columns else []
+                    alunos_crit = df_det_turma[
+                        (df_det_turma["Nivel_Granularidade"] == "ESTUDANTE") & (df_det_turma["Proficiencia_Pct"] <= 40.0)
+                    ]["Estudante"].nunique()
+
+                    detalhes_t_txt = [f"📊 **Foco na Turma {turma_sel_form}:** {media_t:.1f}% ({farol_t})"]
+                    if profs_t:
+                        detalhes_t_txt.append(f"👩‍🏫 **Docente:** {', '.join(profs_t)}")
+                    if alunos_crit > 0:
+                        detalhes_t_txt.append(f"🚨 **{alunos_crit} estudante(s)** em nível crítico (≤ 40%)")
+                    st.caption(" | ".join(detalhes_t_txt))
+            elif escola_sel_form in ESCOLAS_URE_MIRACATU:
+                st.caption("ℹ️ Nenhuma planilha detalhada por turma localizada no Drive para esta escola/componente.")
+
+        # Identificação automática dos dias e horários de ATPC (priorizando o componente filtrado, se houver)
+        area_busca_atpc = comp_filtro_sel if comp_filtro_sel != "Todos os Componentes" else comp_atual
+        atpcs_da_escola = obter_atpcs_escola(df_atpc_global, escola_sel_form, area_busca_atpc)
         sugestoes_atpc = []
         if not atpcs_da_escola.empty:
             resumo_atpc = " | ".join([f"**{r['Dia_Semana_Str']}** ({r['Horario']} — {r['Area_Componente']})" for _, r in atpcs_da_escola.iterrows()])
@@ -2149,7 +2278,16 @@ with abas[0]:
                     dia_sem_nome = DIAS_SEMANA_LABEL[data_visita.weekday()]
                     horario_visita = f"{hora_inicio.strftime('%H:%M')} às {hora_fim.strftime('%H:%M')}"
                     acao_combinada = " • ".join(atividades_selecionadas) if atividades_selecionadas else "Atividade Específica"
-                    detalhe_plano = info_adicional.strip() if info_adicional.strip() else "Conforme diretrizes da pasta"
+
+                    partes_foco = []
+                    if comp_filtro_sel != "Todos os Componentes":
+                        partes_foco.append(f"Componente: {comp_filtro_sel}")
+                    if turma_sel_form != "Todas as Turmas":
+                        partes_foco.append(f"Turma: {turma_sel_form}")
+                    if info_adicional.strip():
+                        partes_foco.append(info_adicional.strip())
+
+                    detalhe_plano = " | ".join(partes_foco) if partes_foco else "Conforme diretrizes da pasta"
                     st.session_state["cronograma_semana"].append({
                         "data_iso": data_visita.isoformat(),
                         "dia": f"{data_visita.strftime('%d/%m/%Y')} ({dia_sem_nome}) — {horario_visita}",
@@ -2157,6 +2295,8 @@ with abas[0]:
                         "local": escola_sel_form,
                         "acao": acao_combinada,
                         "publico": detalhe_plano,
+                        "componente": comp_filtro_sel,
+                        "turma": turma_sel_form,
                         "inclui_atpc": ("Participação em ATPC" in atividades_selecionadas)
                     })
                     st.rerun()
@@ -2177,7 +2317,8 @@ with abas[0]:
                 st.rerun()
 
         # Tabela diagnóstica completa pós-filtro recolhível logo abaixo ou consultável
-        with st.expander(f"📊 Ver Ranking Completo Pós-Filtro ({opcoes_criterio_dict[criterio_prio_sel]})", expanded=False):
+        titulo_exp_prio = f"{opcoes_criterio_dict[criterio_prio_sel]} | {comp_filtro_sel}" if comp_filtro_sel != "Todos os Componentes" else opcoes_criterio_dict[criterio_prio_sel]
+        with st.expander(f"📊 Ver Ranking Completo Pós-Filtro ({titulo_exp_prio})", expanded=False):
             cols_show = [c for c in df_ranking_prio.columns if c != "Indice_Criticidade_Pct"]
             styler_prio = df_ranking_prio[cols_show].style
             if "Indicador_Medio_Pct" in cols_show:
@@ -2205,7 +2346,15 @@ with abas[0]:
 
     df_prio_word = pd.DataFrame()
     if not df_ind_usuario.empty:
-        df_prio_word = df_ind_usuario[df_ind_usuario["Proficiencia_Pct"] <= 60.0]
+        df_prio_word = df_ind_usuario[df_ind_usuario["Proficiencia_Pct"] <= 60.0].copy()
+        if comp_filtro_sel != "Todos os Componentes":
+            df_sub_c = df_prio_word[df_prio_word["Componente"].apply(lambda x: normalizar_texto(comp_filtro_sel) in normalizar_texto(x))]
+            if not df_sub_c.empty:
+                df_prio_word = df_sub_c
+        if turma_sel_form != "Todas as Turmas":
+            df_sub_t = df_prio_word[df_prio_word["Turma"] == turma_sel_form]
+            if not df_sub_t.empty:
+                df_prio_word = df_sub_t
 
     mes_ref_str = f"{mes_plano:02d}/{ano_plano}"
     escola_principal_doc = st.session_state["cronograma_semana"][0]["local"] if st.session_state["cronograma_semana"] else escola_sel_form
