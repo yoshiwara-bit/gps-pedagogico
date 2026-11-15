@@ -730,11 +730,12 @@ def coletar_eventos_mes_planner(ano, mes, df_bloqueios, df_agenda_seduc, eventos
             "detalhe": detalhe
         })
 
-    # 1. Feriados Oficiais SP
+    # 1. Feriados Oficiais SP (texto sucinto no Planner)
     feriados_sp = holidays.country_holidays("BR", subdiv="SP", years=[ano])
     for d_fer, nome_fer in feriados_sp.items():
         if d_fer.year == ano and d_fer.month == mes:
-            add_ev(d_fer, "FERIADO", "Dia Integral", f"🚩 Feriado: {nome_fer}")
+            nome_curto = str(nome_fer).replace("Dia Nacional de Zumbi e da ", "").replace("Dia de ", "").strip()
+            add_ev(d_fer, "FERIADO", "", f"FERIADO {nome_curto}")
 
     # 2. Bloqueios / Convocações URE (aba Bloqueios_Agenda)
     if df_bloqueios is not None and not df_bloqueios.empty:
@@ -771,17 +772,22 @@ def coletar_eventos_mes_planner(ano, mes, df_bloqueios, df_agenda_seduc, eventos
     for ev in (eventos_gcal or []):
         if ev.get("ano") == ano and ev.get("mes") == mes:
             dt_g = date(ano, mes, int(ev["dia"]))
-            add_ev(dt_g, "GCAL", ev.get("horario", ""), f"📅 {ev.get('resumo', 'Compromisso URE')}", ev.get("local", ""))
+            res_g = str(ev.get("resumo", "Compromisso URE")).strip()
+            if "FERIADO" in normalizar_texto(res_g) or "CONSCIENCIA NEGRA" in normalizar_texto(res_g) or "PROCLAMACAO DA REPUBLICA" in normalizar_texto(res_g):
+                nome_f_g = re.sub(r"(?i)^feriado\s*:\s*", "", res_g).replace("Dia Nacional de Zumbi e da ", "").replace("Dia de ", "").strip()
+                add_ev(dt_g, "FERIADO", "", f"FERIADO {nome_f_g}")
+            else:
+                add_ev(dt_g, "GCAL", ev.get("horario", ""), f"📅 {res_g}", ev.get("local", ""))
 
     # 5. Visitas e Atividades lançadas pelo PEC (atualização imediata no planner!)
     for idx_item, item in enumerate(cronograma_pec or []):
         dt_p = parsear_data_flexivel(item.get("data_iso") or item.get("dia", ""), ano, mes)
         if dt_p:
-            h_p = item.get("horario", "") or item.get("turno", "")
             loc_p = item.get("local", "Escola")
-            acao_p = item.get("acao", "")
-            atpc_flag = " [ATPC]" if item.get("inclui_atpc") else ""
-            add_ev(dt_p, "VISITA_PEC", h_p, f"🏫 {loc_p}{atpc_flag}", acao_p)
+            if normalizar_texto(loc_p) == "URE MIRACATU":
+                add_ev(dt_p, "URE_INTERNO", "", "🏢 URE Miracatu", "")
+            else:
+                add_ev(dt_p, "VISITA_PEC", "", f"🏫 {loc_p}", "")
 
     return eventos_por_dia
 
@@ -799,7 +805,8 @@ def renderizar_html_planner_mensal(ano, mes, eventos_por_dia):
         "CONVOCACAO": "background:#FFF3E0; color:#E65100; border-left:3px solid #F57C00;",
         "SEDUC_LIVE": "background:#EDE7F6; color:#4527A0; border-left:3px solid #5E35B1;",
         "GCAL": "background:#FFF8E1; color:#F57F17; border-left:3px solid #FBC02D;",
-        "VISITA_PEC": "background:#E8F5E9; color:#1B5E20; border-left:3px solid #2E7D32;"
+        "VISITA_PEC": "background:#E8F5E9; color:#1B5E20; border-left:3px solid #2E7D32;",
+        "URE_INTERNO": "background:#F9A825; color:#212121; font-weight:600; border-left:3px solid #E65100;"
     }
 
     html = f"""
@@ -811,6 +818,7 @@ def renderizar_html_planner_mensal(ano, mes, eventos_por_dia):
                 <span style="background:#FFF3E0;color:#E65100;padding:2px 5px;border-radius:3px;">📢 Convocação</span>
                 <span style="background:#EDE7F6;color:#4527A0;padding:2px 5px;border-radius:3px;">📺 Live/SEDUC</span>
                 <span style="background:#E8F5E9;color:#1B5E20;padding:2px 5px;border-radius:3px;">🏫 Visita PEC</span>
+                <span style="background:#F9A825;color:#212121;font-weight:600;padding:2px 5px;border-radius:3px;">🏢 URE Miracatu</span>
             </span>
         </div>
         <table style="width: 100%; border-collapse: collapse; table-layout: fixed;">
@@ -1171,57 +1179,186 @@ def consolidar_pastas(df_p):
 
 df_pastas = consolidar_pastas(df_pastas_raw)
 
+COMANDOS_CURTOS_ATIVIDADES = [
+    "Apoio Presencial",
+    "Alinhamento com o/a Coordenador(a)",
+    "Alinhamento 1x1",
+    "Alinhamento de Equipe",
+    "Organização de Formação Presencial",
+    "Formação em Serviço (CGP/CGPG)",
+    "Observação de Aula",
+    "Participação em ATPC",
+    "Live / Webconferência",
+    "Análise de Indicadores",
+    "Busca Ativa / Frequência",
+    "Acompanhamento de Plataformas",
+    "Devolutiva Formativa",
+    "Reunião com Gestão Escolar",
+    "Atendimento Educação Especial (AEE/PEI)",
+    "Acompanhamento Multiplica SP",
+    "Sistematização / Relatório"
+]
+
 TAREFAS_POR_PASTA = {
     "QUALIDADE DA AULA": [
-        "Realizar visita presencial às escolas atribuídas (mínimo 1x a cada duas semanas)",
-        "Realizar formação em serviço de CGP e CGPG com base no roteiro SEDUC",
-        "Assistir a aulas previamente agendadas e registrar devolutivas formativas",
-        "Participar da ATPC da unidade escolar para alinhamento pedagógico"
+        "Apoio Presencial",
+        "Alinhamento com o/a Coordenador(a)",
+        "Formação em Serviço (CGP/CGPG)",
+        "Observação de Aula",
+        "Participação em ATPC",
+        "Devolutiva Formativa",
+        "Análise de Indicadores"
     ],
     "DESENVOLVIMENTO CURRICULAR": [
-        "Articular currículo, materiais digitais/impressos e plataformas (Speak, Open English, Khan Academy, Matific, Leia SP, Redação) com SARESP, Prova Paulista, Diagnóstica, SAEB e ENEM",
-        "Priorizar turmas, docentes e estudantes com desempenho crítico dentro da sua pasta de atuação",
-        "Participar da ATPC da escola para orientação de currículo, materiais e plataformas",
-        "Cascatear orientações técnicas e formações da SEDUC para CGP/CGPG e docentes"
+        "Apoio Presencial",
+        "Alinhamento com o/a Coordenador(a)",
+        "Participação em ATPC",
+        "Acompanhamento de Plataformas",
+        "Análise de Indicadores",
+        "Organização de Formação Presencial",
+        "Live / Webconferência"
     ],
     "CONVIVA": [
-        "Realizar no mínimo 4 visitas presenciais às unidades escolares por semana",
-        "Monitorar frequência crítica (< 75%), busca ativa e registros dos POC na Plataforma Conviva (Placon)",
-        "Acompanhar atendimentos dos Psicólogos na Escola e fiscalizar prazos",
-        "Revisar e acompanhar a implementação dos Planos de Melhoria de Convivência"
+        "Apoio Presencial",
+        "Busca Ativa / Frequência",
+        "Reunião com Gestão Escolar",
+        "Alinhamento com o/a Coordenador(a)",
+        "Acompanhamento Placon / Conviva",
+        "Análise de Indicadores"
     ],
     "MULTIPLICA": [
-        "Realizar visita presencial de no mínimo 2h/semana a Professor Multiplicador ou cursista",
-        "Acompanhar painel de gestão do Programa Multiplica SP e intervir quando necessário",
-        "Participar dos encontros formativos EFAPE e reuniões periódicas com a CAFF",
-        "Mobilizar escolas sem cursistas ativos para adesão e divulgação do programa"
+        "Apoio Presencial",
+        "Acompanhamento Multiplica SP",
+        "Alinhamento com o/a Coordenador(a)",
+        "Live / Webconferência",
+        "Organização de Formação Presencial",
+        "Análise de Indicadores"
     ],
     "EDUCACAO ESPECIAL": [
-        "Verificar Estudo de Caso (EC), PAEE, PEI e Relatórios Bimestrais nas escolas",
-        "Priorizar visitas às unidades com maior demanda de apoio em inclusão e acessibilidade",
-        "Apoiar CGP, CGPG, Professores do AEE e Ensino Colaborativo (inclusive em ATPC)",
-        "Reportar ao CEC relatório circunstanciado das ações formativas e atendimentos"
+        "Apoio Presencial",
+        "Atendimento Educação Especial (AEE/PEI)",
+        "Alinhamento com o/a Coordenador(a)",
+        "Participação em ATPC",
+        "Reunião com Gestão Escolar",
+        "Sistematização / Relatório"
     ],
     "RECOMPOSICAO": [
-        "Apoiar prioritariamente as escolas com maior porcentagem de estudantes em defasagem",
-        "Monitorar evolução de proficiência, frequência e plataformas (Khan Academy, Matific, Leia SP) em Língua Portuguesa e Matemática",
-        "Realizar visitas presenciais regulares e encontros virtuais nas escolas prioritárias",
-        "Acionar PEC Desenvolvimento Curricular diante de dificuldades conceituais/materiais"
+        "Apoio Presencial",
+        "Análise de Indicadores",
+        "Acompanhamento de Plataformas",
+        "Alinhamento com o/a Coordenador(a)",
+        "Participação em ATPC",
+        "Devolutiva Formativa"
     ],
     "CEC": [
-        "Conduzir alinhamento semanal com a Dirigente Regional e Equipe de Especialistas",
-        "Consolidar Plano de Trabalho mensal da equipe (prazo 2º dia útil) e monitorar Termos de Visita",
-        "Realizar reuniões individuais (1:1) e auditar justificativas de fechamento mensal"
+        "Alinhamento de Equipe",
+        "Alinhamento 1x1",
+        "Alinhamento com o/a Coordenador(a)",
+        "Análise de Indicadores",
+        "Organização de Formação Presencial",
+        "Live / Webconferência",
+        "Sistematização / Relatório"
     ],
     "AT": [
-        "Apoiar a coordenação dos alinhamentos regionais e consolidar registros da equipe",
-        "Acompanhar cronograma de formações, convocações e indicadores da URE"
+        "Alinhamento de Equipe",
+        "Análise de Indicadores",
+        "Organização de Formação Presencial",
+        "Live / Webconferência",
+        "Sistematização / Relatório"
     ]
 }
 
 # ==============================================================================
 # GERADOR DE PLANO DE TRABALHO EM WORD COM CABEÇALHO OFICIAL DA URE MIRACATU
 # ==============================================================================
+def renderizar_preview_plano_html(nome_pec, email_pec, pasta_pec, comp_pec, escola_sel, semana_str, cronograma_dias, obs_texto, df_prioridades_pec=None):
+    cron_ordenado = sorted(cronograma_dias, key=lambda x: x.get("data_iso", "9999-99-99"))
+    linhas_cron = ""
+    if cron_ordenado:
+        for item in cron_ordenado:
+            linhas_cron += f"""
+            <tr>
+                <td style="border:1px solid #ccc;padding:6px;">{item.get('dia', '')}</td>
+                <td style="border:1px solid #ccc;padding:6px;"><b>{item.get('local', '')}</b></td>
+                <td style="border:1px solid #ccc;padding:6px;">{item.get('acao', '')}</td>
+                <td style="border:1px solid #ccc;padding:6px;">{item.get('publico', '')}</td>
+            </tr>
+            """
+    else:
+        linhas_cron = '<tr><td colspan="4" style="border:1px solid #ccc;padding:8px;text-align:center;color:#666;">Nenhuma visita ou ação adicionada ainda.</td></tr>'
+
+    secao_ind = ""
+    if df_prioridades_pec is not None and not df_prioridades_pec.empty:
+        linhas_ind = ""
+        for _, r_i in df_prioridades_pec.head(15).iterrows():
+            linhas_ind += f"""
+            <tr>
+                <td style="border:1px solid #ccc;padding:5px;">{r_i.get('Escola', '-')}</td>
+                <td style="border:1px solid #ccc;padding:5px;">{r_i.get('Subcategoria', '-')} ({r_i.get('Periodo', '-')})</td>
+                <td style="border:1px solid #ccc;padding:5px;">{r_i.get('Turma', '-')} | {r_i.get('Estudante', '-')}</td>
+                <td style="border:1px solid #ccc;padding:5px;">{r_i.get('Componente', '-')}</td>
+                <td style="border:1px solid #ccc;padding:5px;">{formatar_pct_str(r_i.get('Proficiencia_Pct'))} - {r_i.get('Nivel', '-')}</td>
+            </tr>
+            """
+        secao_ind = f"""
+        <h4 style="color:#1a365d;margin-top:16px;margin-bottom:6px;">2. Indicadores Prioritários da Sua Pasta de Atuação</h4>
+        <table style="width:100%;border-collapse:collapse;font-size:12px;">
+            <thead>
+                <tr style="background:#f1f5f9;">
+                    <th style="border:1px solid #ccc;padding:6px;text-align:left;">Escola</th>
+                    <th style="border:1px solid #ccc;padding:6px;text-align:left;">Subcategoria / Período</th>
+                    <th style="border:1px solid #ccc;padding:6px;text-align:left;">Turma / Estudante</th>
+                    <th style="border:1px solid #ccc;padding:6px;text-align:left;">Componente</th>
+                    <th style="border:1px solid #ccc;padding:6px;text-align:left;">Resultado / Farol</th>
+                </tr>
+            </thead>
+            <tbody>{linhas_ind}</tbody>
+        </table>
+        """
+
+    secao_obs = ""
+    if obs_texto and obs_texto.strip():
+        obs_fmt = obs_texto.strip().replace("\n", "<br>")
+        secao_obs = f"""
+        <h4 style="color:#1a365d;margin-top:16px;margin-bottom:6px;">3. Pautas Formativas, Diagnóstico e Devolutivas</h4>
+        <div style="border:1px solid #e2e8f0;background:#f8fafc;padding:10px;border-radius:4px;font-size:13px;">{obs_fmt}</div>
+        """
+
+    return f"""
+    <div style="background:#ffffff;border:1px solid #cbd5e1;border-radius:8px;padding:24px;box-shadow:0 2px 8px rgba(0,0,0,0.06);font-family:'Segoe UI',Arial,sans-serif;color:#1e293b;">
+        <div style="text-align:center;border-bottom:2px solid #1e3a8a;padding-bottom:10px;margin-bottom:16px;">
+            <div style="font-size:13px;font-weight:bold;">SECRETARIA DA EDUCAÇÃO DO ESTADO DE SÃO PAULO</div>
+            <div style="font-size:12px;font-weight:bold;">UNIDADE REGIONAL DE ENSINO DE MIRACATU — EQUIPE DE ESPECIALISTAS EM CURRÍCULO (EEC)</div>
+            <div style="font-size:11px;color:#475569;">PLANO DE TRABALHO / GUIA PEDAGÓGICO — ENTREGA ATÉ O 2º DIA ÚTIL DO MÊS</div>
+        </div>
+        <h3 style="text-align:center;color:#0f172a;margin:10px 0 16px 0;">PLANO DE TRABALHO — ACOMPANHAMENTO PEDAGÓGICO (GPS)</h3>
+        <div style="font-size:13px;line-height:1.6;margin-bottom:14px;">
+            <b>Especialista / PEC Responsável:</b> {nome_pec} ({email_pec})<br>
+            <b>Pasta / Área de Atuação:</b> {pasta_pec} — <b>Componente:</b> {comp_pec}<br>
+            <b>Unidade Escolar Prioritária Principal:</b> {escola_sel}<br>
+            <b>Período / Mês de Referência:</b> {semana_str}
+        </div>
+        <h4 style="color:#1a365d;margin-bottom:6px;">1. Cronograma Mensal de Visitas, ATPCs e Ações Planejadas</h4>
+        <table style="width:100%;border-collapse:collapse;font-size:12.5px;">
+            <thead>
+                <tr style="background:#f1f5f9;">
+                    <th style="border:1px solid #ccc;padding:6px;text-align:left;">Data / Dia / Horário</th>
+                    <th style="border:1px solid #ccc;padding:6px;text-align:left;">Escola / Local</th>
+                    <th style="border:1px solid #ccc;padding:6px;text-align:left;">Ação Pedagógica (Resolução SEDUC 01/2026)</th>
+                    <th style="border:1px solid #ccc;padding:6px;text-align:left;">Público-Alvo / ATPC / Encaminhamento</th>
+                </tr>
+            </thead>
+            <tbody>{linhas_cron}</tbody>
+        </table>
+        {secao_ind}
+        {secao_obs}
+        <div style="margin-top:32px;display:flex;justify-content:space-around;text-align:center;font-size:12px;">
+            <div>_________________________________________<br><b>PEC: {nome_pec}</b></div>
+            <div>_________________________________________<br><b>CEC — Coordenador de Equipe Curricular</b></div>
+        </div>
+    </div>
+    """
+
 def gerar_docx_plano(nome_pec, email_pec, pasta_pec, comp_pec, escola_sel, semana_str, cronograma_dias, obs_texto, df_prioridades_pec=None):
     doc = Document()
 
@@ -1538,9 +1675,35 @@ with abas[0]:
     with col_lancamento:
         st.markdown("### ✍️ Lançar Visita / Ação no Plano")
 
+        # --- BUSCA RÁPIDA PELO INÍCIO + LISTA SUSPENSA SINCRONIZADA ---
+        opcoes_locais = lista_esc_select + ["URE Miracatu", "Reunião Virtual / EFAPE / SEDUC"]
+
+        busca_inicio = st.text_input(
+            "🔎 Identificar escola pelo início (ou selecione na lista abaixo):",
+            placeholder="Digite o início do nome (ex.: Alice, Raposo, URE...)",
+            key="busca_inicio_escola"
+        )
+
+        indice_sugerido = 0
+        if busca_inicio.strip():
+            termo_norm = normalizar_texto(busca_inicio).replace("EE ", "")
+            match_inicio = next(
+                (i for i, opt in enumerate(opcoes_locais)
+                 if normalizar_texto(opt).replace("EE ", "").startswith(termo_norm)
+                 or normalizar_texto(opt).startswith(normalizar_texto(busca_inicio))),
+                None
+            )
+            if match_inicio is None:
+                match_inicio = next(
+                    (i for i, opt in enumerate(opcoes_locais) if termo_norm in normalizar_texto(opt)),
+                    0
+                )
+            indice_sugerido = match_inicio
+
         escola_sel_form = st.selectbox(
-            "1. Escolha a Escola Prioritária ou Local:",
-            lista_esc_select + ["Sede URE Miracatu / Trabalho Interno", "Reunião Virtual / EFAPE / SEDUC"],
+            "1. Escola Prioritária ou Local Selecionado:",
+            opcoes_locais,
+            index=indice_sugerido,
             key="esc_lancamento_live"
         )
 
@@ -1556,7 +1719,8 @@ with abas[0]:
 
         # Se houver sugestões de datas de ATPC no mês, permite escolher com 1 clique
         data_sugerida_dt = None
-        horario_sugerido_str = "08:00 às 12:00"
+        hora_ini_default = datetime.strptime("08:00", "%H:%M").time()
+        hora_fim_default = datetime.strptime("12:00", "%H:%M").time()
         incluir_atpc_auto = False
 
         if sugestoes_atpc:
@@ -1568,8 +1732,14 @@ with abas[0]:
             if escolha_sug != "Escolher data manualmente no calendário abaixo...":
                 idx_s = opcoes_sug.index(escolha_sug) - 1
                 data_sugerida_dt = sugestoes_atpc[idx_s]["data"]
-                horario_sugerido_str = sugestoes_atpc[idx_s]["horario"]
                 incluir_atpc_auto = True
+                m_horas = re.findall(r"(\d{1,2}:\d{2})", str(sugestoes_atpc[idx_s]["horario"]))
+                if len(m_horas) >= 2:
+                    try:
+                        hora_ini_default = datetime.strptime(m_horas[0], "%H:%M").time()
+                        hora_fim_default = datetime.strptime(m_horas[1], "%H:%M").time()
+                    except Exception:
+                        pass
 
         # Calcula data padrão dentro do mês/ano selecionado
         _, max_dia_mes = calendar.monthrange(ano_plano, mes_plano)
@@ -1577,41 +1747,55 @@ with abas[0]:
         data_default = data_sugerida_dt if data_sugerida_dt else date(ano_plano, mes_plano, dia_default)
 
         with st.form("form_add_atividade_split", clear_on_submit=False):
-            c_d1, c_d2 = st.columns(2)
-            with c_d1:
-                data_visita = st.date_input(
-                    "2. Data da Visita / Ação:",
-                    value=data_default,
-                    min_value=date(ano_plano, mes_plano, 1),
-                    max_value=date(ano_plano, mes_plano, max_dia_mes),
-                    format="DD/MM/YYYY"
-                )
-            with c_d2:
-                horario_visita = st.text_input("3. Horário / Turno:", value=horario_sugerido_str)
-
-            tarefas_pasta = TAREFAS_POR_PASTA.get(pasta_atual, [])
-            acao_escolhida = st.selectbox("4. Ação Pedagógica da Pasta:", tarefas_pasta + ["Participação em ATPC da Unidade Escolar", "Outra ação específica"])
-            publico_enc = st.text_input(
-                "5. Público-Alvo / Detalhamento / ATPC:",
-                value=("Participação na ATPC da escola + Acompanhamento Pedagógico" if incluir_atpc_auto else ""),
-                placeholder="Ex.: CGP/CGPG, Professores da área, ATPC..."
+            data_visita = st.date_input(
+                "2. Data (clique para abrir o calendário):",
+                value=data_default,
+                min_value=date(ano_plano, mes_plano, 1),
+                max_value=date(ano_plano, mes_plano, max_dia_mes),
+                format="DD/MM/YYYY"
             )
-            participa_atpc_chk = st.checkbox("Marcar como participação em ATPC no Planner", value=incluir_atpc_auto)
 
-            add_btn = st.form_submit_button("➕ Adicionar ao Planner ao Lado", use_container_width=True)
+            c_h1, c_h2 = st.columns(2)
+            with c_h1:
+                hora_inicio = st.time_input("3. Horário Início (clicável):", value=hora_ini_default, step=900)
+            with c_h2:
+                hora_fim = st.time_input("4. Horário Término (clicável):", value=hora_fim_default, step=900)
+
+            opcoes_atividades = list(dict.fromkeys(TAREFAS_POR_PASTA.get(pasta_atual, []) + COMANDOS_CURTOS_ATIVIDADES))
+            default_atividades = ["Participação em ATPC", "Apoio Presencial"] if incluir_atpc_auto else [opcoes_atividades[0]]
+            atividades_selecionadas = st.multiselect(
+                "5. Atividades (clique para selecionar uma ou várias):",
+                options=opcoes_atividades,
+                default=default_atividades,
+                placeholder="Selecione as atividades que irá realizar..."
+            )
+
+            info_adicional = st.text_input(
+                "6. Informação Adicional (opcional — vai apenas para o Plano de Trabalho):",
+                value="",
+                placeholder="Digite alguma informação extra se precisar (ex.: pauta, turma, público)..."
+            )
+
+            add_btn = st.form_submit_button("➕ Adicionar ao Planner e ao Plano de Trabalho", use_container_width=True)
 
             if add_btn:
-                dia_sem_nome = DIAS_SEMANA_LABEL[data_visita.weekday()]
-                st.session_state["cronograma_semana"].append({
-                    "data_iso": data_visita.isoformat(),
-                    "dia": f"{data_visita.strftime('%d/%m/%Y')} ({dia_sem_nome}) — {horario_visita}",
-                    "horario": horario_visita,
-                    "local": escola_sel_form,
-                    "acao": acao_escolhida,
-                    "publico": publico_enc if publico_enc.strip() else "Equipe Gestora / Docentes",
-                    "inclui_atpc": participa_atpc_chk
-                })
-                st.rerun()
+                if not atividades_selecionadas and not info_adicional.strip():
+                    st.warning("Selecione pelo menos uma atividade ou preencha uma informação adicional.")
+                else:
+                    dia_sem_nome = DIAS_SEMANA_LABEL[data_visita.weekday()]
+                    horario_visita = f"{hora_inicio.strftime('%H:%M')} às {hora_fim.strftime('%H:%M')}"
+                    acao_combinada = " • ".join(atividades_selecionadas) if atividades_selecionadas else "Atividade Específica"
+                    detalhe_plano = info_adicional.strip() if info_adicional.strip() else "Conforme diretrizes da pasta"
+                    st.session_state["cronograma_semana"].append({
+                        "data_iso": data_visita.isoformat(),
+                        "dia": f"{data_visita.strftime('%d/%m/%Y')} ({dia_sem_nome}) — {horario_visita}",
+                        "horario": horario_visita,
+                        "local": escola_sel_form,
+                        "acao": acao_combinada,
+                        "publico": detalhe_plano,
+                        "inclui_atpc": ("Participação em ATPC" in atividades_selecionadas)
+                    })
+                    st.rerun()
 
         # Lista compacta das visitas lançadas com botão individual de remoção
         if st.session_state["cronograma_semana"]:
@@ -1626,6 +1810,7 @@ with abas[0]:
                         st.rerun()
             if st.button("🧹 Limpar Todos os Agendamentos", use_container_width=True):
                 st.session_state["cronograma_semana"] = []
+    st.session_state["df_atpc_upload"] = pd.DataFrame()
                 st.rerun()
 
     # --- LADO ESQUERDO: PLANNER MENSAL COMPLETO ATUALIZADO EM TEMPO REAL ---
@@ -1666,6 +1851,20 @@ with abas[0]:
         df_prio_word
     )
     nome_arq_docx = f"Plano_Trabalho_URE_{st.session_state['usuario_nome'].replace(' ', '_')}_{ano_plano}{mes_plano:02d}.docx"
+
+    with st.expander("👁️ Pré-Visualizar Plano de Trabalho Completo (Antes de Baixar ou Enviar)", expanded=True):
+        html_preview = renderizar_preview_plano_html(
+            st.session_state["usuario_nome"],
+            st.session_state["usuario_email"],
+            pasta_atual,
+            comp_atual,
+            escola_principal_doc,
+            mes_ref_str,
+            st.session_state["cronograma_semana"],
+            obs_texto,
+            df_prio_word
+        )
+        st.markdown(html_preview, unsafe_allow_html=True)
 
     col_dl, col_em, col_drv_link = st.columns(3)
     with col_dl:
