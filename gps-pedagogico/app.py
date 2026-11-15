@@ -145,47 +145,116 @@ MAPA_ATUACAO_COMPONENTES_PLATAFORMAS = {
     }
 }
 
-def obter_regras_atuacao_pec(pasta_pec, componente_pec):
+def extrair_regras_config_pastas_sheets(df_pastas_raw, pasta_pec, componente_pec):
+    """Lê na aba Config_Pastas do Sheets eventuais componentes e plataformas vinculados à subpasta do PEC."""
+    if df_pastas_raw is None or df_pastas_raw.empty:
+        return [], []
+    p_norm = normalizar_texto(pasta_pec)
+    c_norm = normalizar_texto(componente_pec)
+    tokens_pec = [t.strip() for t in re.split(r"[,;/|-]", c_norm) if t.strip() and t.strip() not in ["TODOS", "GERAL"]]
+
+    comps_sheets, plats_sheets = [], []
+    todas_plats_conhecidas = ["KHAN ACADEMY", "MATIFIC", "SPEAK", "OPEN ENGLISH", "LEIA SP", "REDACAO PAULISTA", "ALURA", "PLATAFORMA DE CIENCIAS", "PLATAFORMA HUMANAS"]
+    todos_comps_conhecidos = [c for v in MAPA_ATUACAO_COMPONENTES_PLATAFORMAS.values() for c in v["componentes"]]
+
+    for _, row in df_pastas_raw.iterrows():
+        linha_txt = normalizar_texto(" ".join([str(v) for v in row.values if pd.notna(v)]))
+        if not linha_txt:
+            continue
+        match_pasta = (p_norm in linha_txt) or any(tok in linha_txt for tok in tokens_pec)
+        if match_pasta and (not tokens_pec or any(tok in linha_txt for tok in tokens_pec)):
+            for c_k in todos_comps_conhecidos:
+                if c_k in linha_txt and c_k not in comps_sheets:
+                    comps_sheets.append(c_k)
+            for pl_k in todas_plats_conhecidas:
+                if pl_k in linha_txt and pl_k not in plats_sheets:
+                    plats_sheets.append(pl_k)
+    return comps_sheets, plats_sheets
+
+def obter_regras_atuacao_pec(pasta_pec, componente_pec, df_pastas_raw=None):
     p_norm = normalizar_texto(pasta_pec)
     c_norm = normalizar_texto(componente_pec)
 
-    if p_norm in ["CEC", "AT"] or c_norm in ["", "TODOS"]:
-        if p_norm == "RECOMPOSICAO":
-            return MAPA_ATUACAO_COMPONENTES_PLATAFORMAS["RECOMPOSICAO"]
+    # CEC e AT têm visão global de todos os componentes e plataformas
+    if p_norm in ["CEC", "AT"]:
         return None
 
+    # Qualidade da Aula (QA): acompanha integralmente suas escolas atribuídas no Sheets,
+    # com acesso a TODAS as plataformas digitais e componentes dessas escolas.
+    if p_norm == "QUALIDADE DA AULA":
+        return {"componentes": None, "plataformas": None}
+
+    if p_norm == "RECOMPOSICAO":
+        return MAPA_ATUACAO_COMPONENTES_PLATAFORMAS["RECOMPOSICAO"]
+
+    # Desenvolvimento Curricular (e demais pastas específicas): filtra conforme pasta/componente do Sheets
+    if c_norm in ["", "TODOS"]:
+        return None
+
+    tokens_comp = [t.strip() for t in re.split(r"[,;/|-]", c_norm) if t.strip()]
+    comps_encontrados = list(dict.fromkeys(tokens_comp))
+    plats_encontradas = []
+
     for chave_area, regras in MAPA_ATUACAO_COMPONENTES_PLATAFORMAS.items():
-        if chave_area in c_norm or chave_area in p_norm:
-            return regras
-        if any(comp in c_norm for comp in regras["componentes"]):
-            return regras
+        if chave_area in c_norm or chave_area in p_norm or any(tok in chave_area or chave_area in tok for tok in tokens_comp):
+            comps_encontrados.extend(regras["componentes"])
+            plats_encontradas.extend(regras["plataformas"])
+        elif any(comp in tok or tok in comp for tok in tokens_comp for comp in regras["componentes"]):
+            comps_encontrados.extend(regras["componentes"])
+            plats_encontradas.extend(regras["plataformas"])
 
-    return {"componentes": [c_norm], "plataformas": ["SPEAK", "OPEN ENGLISH", "KHAN ACADEMY", "MATIFIC", "LEIA SP", "REDACAO PAULISTA", "ALURA"]}
+    # Complementa com vínculos explícitos da aba Config_Pastas do Google Sheets
+    comps_sh, plats_sh = extrair_regras_config_pastas_sheets(df_pastas_raw, pasta_pec, componente_pec)
+    comps_encontrados.extend(comps_sh)
+    plats_encontradas.extend(plats_sh)
 
-def filtrar_indicadores_por_pec(df_ind, pasta_pec, componente_pec, escolas_pec=None):
+    comps_unicos = list(dict.fromkeys([c for c in comps_encontrados if c]))
+    plats_unicas = list(dict.fromkeys([p for p in plats_encontradas if p]))
+
+    return {
+        "componentes": comps_unicos if comps_unicos else [c_norm],
+        "plataformas": plats_unicas
+    }
+
+def filtrar_indicadores_por_pec(df_ind, pasta_pec, componente_pec, escolas_pec=None, df_pastas_raw=None):
     if df_ind is None or df_ind.empty:
         return pd.DataFrame()
     df_f = df_ind.copy()
+    p_norm = normalizar_texto(pasta_pec)
 
-    if escolas_pec and "Escola" in df_f.columns:
+    # Qualidade da Aula: restringe ESTRITAMENTE às escolas de acompanhamento atribuídas ao PEC no Sheets
+    if p_norm == "QUALIDADE DA AULA":
+        esc_norm = [normalizar_texto(e) for e in (escolas_pec or []) if str(e).strip()]
+        if not esc_norm:
+            return pd.DataFrame(columns=df_f.columns)
+        df_f = df_f[df_f["Escola"].apply(lambda x: any(e in normalizar_texto(x) or normalizar_texto(x) in e for e in esc_norm))]
+    elif escolas_pec and "Escola" in df_f.columns:
         esc_norm = [normalizar_texto(e) for e in escolas_pec if str(e).strip()]
         if esc_norm:
             df_f = df_f[df_f["Escola"].apply(lambda x: any(e in normalizar_texto(x) or normalizar_texto(x) in e for e in esc_norm))]
 
-    regras = obter_regras_atuacao_pec(pasta_pec, componente_pec)
+    regras = obter_regras_atuacao_pec(pasta_pec, componente_pec, df_pastas_raw=df_pastas_raw)
     if regras is None:
         return df_f
 
-    comps_alvo = regras["componentes"]
-    plats_alvo = regras["plataformas"]
+    comps_alvo = regras.get("componentes")
+    plats_alvo = regras.get("plataformas")
 
     def linha_pertence(row):
         tipo_reg = normalizar_texto(row.get("Tipo_Indicador", "AVALIACAO"))
         if tipo_reg == "FREQUENCIA":
             return True
         if tipo_reg == "PLATAFORMA":
+            # Se plats_alvo for None (caso de Qualidade da Aula), libera TODAS as plataformas
+            if plats_alvo is None:
+                return True
+            if not plats_alvo:
+                return False
             plat = normalizar_texto(row.get("Subcategoria", "")) + " " + normalizar_texto(row.get("Plataforma_Critica", ""))
             return any(p in plat for p in plats_alvo)
+        # Avaliações
+        if comps_alvo is None:
+            return True
         comp = normalizar_texto(row.get("Componente", ""))
         if comp in ["", "TODOS", "GERAL"]:
             return True
@@ -253,15 +322,46 @@ def classificar_farol_nivel(pct):
     else:
         return "🔵 Azul (Avançado)"
 
+def identificar_nome_subpasta_especifica(caminho_pasta, tipo_categoria):
+    """Extrai dinamicamente o nome da subpasta dentro de Avaliações, Plataformas ou Frequência no Drive."""
+    if not caminho_pasta:
+        return None
+    partes = [p.strip() for p in caminho_pasta.split("/") if p.strip()]
+    ignorar = {
+        "INDICADORES", "DADOS", "PLANILHAS", "BASE", "URE MIRACATU", "GPS",
+        "1 BIMESTRE", "2 BIMESTRE", "3 BIMESTRE", "1º BIMESTRE", "2º BIMESTRE", "3º BIMESTRE"
+    }
+    for idx, p in enumerate(partes):
+        pn = normalizar_texto(p)
+        if tipo_categoria == "AVALIACAO" and any(k in pn for k in ["AVALIAC", "PROVA"]):
+            for sub_p in partes[idx + 1:]:
+                sn = normalizar_texto(sub_p)
+                if sn not in ignorar and not re.match(r"^[1-4]\s*[º°O]?\s*BIM", sn) and not any(normalizar_texto(e).replace("EE ", "") in sn for e in ESCOLAS_URE_MIRACATU):
+                    return sub_p.strip()
+        elif tipo_categoria == "PLATAFORMA" and "PLATAFORMA" in pn:
+            for sub_p in partes[idx + 1:]:
+                sn = normalizar_texto(sub_p)
+                if sn not in ignorar and not re.match(r"^[1-4]\s*[º°O]?\s*BIM", sn) and not any(normalizar_texto(e).replace("EE ", "") in sn for e in ESCOLAS_URE_MIRACATU):
+                    return sub_p.strip()
+        elif tipo_categoria == "FREQUENCIA" and "FREQUENCIA" in pn:
+            for sub_p in partes[idx + 1:]:
+                sn = normalizar_texto(sub_p)
+                if sn not in ignorar and not any(normalizar_texto(e).replace("EE ", "") in sn for e in ESCOLAS_URE_MIRACATU):
+                    return sub_p.strip()
+    return None
+
 def detectar_classificacao_arquivo(nome_arquivo, caminho_pasta=""):
     ref = normalizar_texto(f"{caminho_pasta} {nome_arquivo}")
+    ref_pasta = normalizar_texto(caminho_pasta)
 
-    if "FREQUENCIA" in ref:
+    if "FREQUENCIA" in ref_pasta or "FREQUENCIA" in ref:
         tipo = "FREQUENCIA"
-    elif any(k in ref for k in ["PLATAFORMA", "KHAN", "MATIFIC", "SPEAK", "OPEN ENGLISH", "LEIA SP", "REDACAO", "ALURA"]):
+    elif "PLATAFORMA" in ref_pasta or any(k in ref for k in ["PLATAFORMA", "KHAN", "MATIFIC", "SPEAK", "OPEN ENGLISH", "LEIA SP", "REDACAO", "ALURA"]):
         tipo = "PLATAFORMA"
     else:
         tipo = "AVALIACAO"
+
+    subpasta_dir = identificar_nome_subpasta_especifica(caminho_pasta, tipo)
 
     if tipo == "PLATAFORMA":
         if "KHAN" in ref:
@@ -278,10 +378,12 @@ def detectar_classificacao_arquivo(nome_arquivo, caminho_pasta=""):
             sub = "Redação Paulista"
         elif "ALURA" in ref:
             sub = "Alura"
+        elif subpasta_dir:
+            sub = subpasta_dir
         else:
             sub = "Outras Plataformas"
     elif tipo == "FREQUENCIA":
-        sub = "Frequência Escolar"
+        sub = subpasta_dir if subpasta_dir else "Frequência Escolar"
     else:
         if "PAULISTA" in ref or re.search(r"\bPP\b", ref):
             sub = "Prova Paulista"
@@ -293,18 +395,24 @@ def detectar_classificacao_arquivo(nome_arquivo, caminho_pasta=""):
             sub = "ENEM"
         elif "DIAGNOSTICA" in ref or "ENTRADA" in ref:
             sub = "Avaliação Diagnóstica"
+        elif subpasta_dir:
+            sub = subpasta_dir
         else:
             sub = "Outras Avaliações"
 
+    # Prova Paulista possui apenas 1º, 2º e 3º Bimestres (não existe 4º Bimestre)
+    max_bim = 3 if sub == "Prova Paulista" else 4
     m_bim = re.search(r"([1-4])\s*[º°O]?\s*(?:BIM|B\b)", ref)
     m_ano = re.search(r"\b(202[3-9])\b", ref)
     m_sem = re.search(r"SEM(?:ANA)?\s*([0-9]{1,2})", ref)
-    if m_bim:
+    if m_bim and int(m_bim.group(1)) <= max_bim:
         periodo = f"{m_bim.group(1)}º Bimestre" + (f" ({m_ano.group(1)})" if m_ano else "")
     elif m_ano:
         periodo = f"Ano {m_ano.group(1)}"
     elif m_sem:
         periodo = f"Semana {m_sem.group(1)}"
+    elif subpasta_dir and tipo == "FREQUENCIA":
+        periodo = subpasta_dir
     else:
         periodo = "Geral / Período Atual"
 
@@ -665,74 +773,126 @@ def padronizar_planilha_bruta(df_raw, nome_arquivo="", pasta_origem=""):
     return pd.DataFrame(registros_b)
 
 # ==============================================================================
-# MOTOR DE PRIORIZAÇÃO PÓS-FILTRO POR INDICADOR (PROVA PAULISTA, SARESP, FREQUÊNCIA, PLATAFORMA, TODOS)
+# DETECÇÃO AUTOMÁTICA DA PROVA PAULISTA MAIS ATUAL DO PERÍODO (1º A 3º BIMESTRE)
 # ==============================================================================
-OPCOES_CRITERIO_PRIORIDADE = {
-    "TODOS": "Todos os Indicadores (Análise Multi-Indicador Consolidada)",
-    "PP_3BIM": "Prova Paulista — 3º Bimestre",
-    "PP_1BIM": "Prova Paulista — 1º Bimestre",
-    "PP_2BIM": "Prova Paulista — 2º Bimestre",
-    "PP_4BIM": "Prova Paulista — 4º Bimestre",
-    "PP_TODAS": "Prova Paulista (Todos os Bimestres)",
-    "SARESP": "SARESP",
-    "FREQUENCIA": "Frequência Escolar",
-    "PLATAFORMA": "Plataformas Digitais (Todas)",
-    "DIAGNOSTICA": "Avaliação Diagnóstica",
-    "SAEB": "SAEB",
-    "ENEM": "ENEM"
-}
+def obter_max_bimestre_prova_paulista_por_mes(mes_ref):
+    """Prova Paulista ocorre até o 3º Bimestre (não existe 4º Bimestre)."""
+    if mes_ref is None:
+        return 3
+    m = int(mes_ref)
+    if m <= 5:
+        return 1
+    elif m <= 8:
+        return 2
+    else:
+        return 3
 
-def filtrar_base_por_criterio_prioridade(df_ind, criterio_chave):
+def obter_edicao_mais_atual_prova_paulista(df_ind, ano_ref=None, mes_ref=None):
+    """
+    Identifica automaticamente a edição mais atual da Prova Paulista disponível
+    para o período em que o plano ou a pesquisa está sendo realizado (1º, 2º ou 3º Bimestre).
+    Retorna (bimestre_num, rotulo_edicao).
+    """
+    max_bim_periodo = obter_max_bimestre_prova_paulista_por_mes(mes_ref)
+    if df_ind is None or df_ind.empty:
+        return max_bim_periodo, f"{max_bim_periodo}º Bimestre"
+
+    df_pp = df_ind[df_ind["Subcategoria"].apply(lambda x: "PAULISTA" in normalizar_texto(x))].copy()
+    if df_pp.empty:
+        return max_bim_periodo, f"{max_bim_periodo}º Bimestre"
+
+    candidatos = []
+    for per_val in df_pp["Periodo"].dropna().unique():
+        p_norm = normalizar_texto(per_val)
+        m_b = re.search(r"([1-3])\s*[º°O]?\s*BIM", p_norm)
+        m_a = re.search(r"\b(202[3-9])\b", p_norm)
+        b_num = int(m_b.group(1)) if m_b else 0
+        a_num = int(m_a.group(1)) if m_a else (int(ano_ref) if ano_ref else date.today().year)
+        if b_num in [1, 2, 3]:
+            candidatos.append((a_num, b_num, str(per_val).strip()))
+
+    if not candidatos:
+        return max_bim_periodo, f"{max_bim_periodo}º Bimestre"
+
+    if ano_ref:
+        cands_ano = [c for c in candidatos if c[0] == int(ano_ref)]
+        if cands_ano:
+            candidatos = cands_ano
+
+    cands_validos = [c for c in candidatos if c[1] <= max_bim_periodo]
+    escolhido = max(cands_validos, key=lambda x: (x[0], x[1])) if cands_validos else max(candidatos, key=lambda x: (x[0], x[1]))
+    return escolhido[1], escolhido[2]
+
+def filtrar_prova_paulista_mais_atual(df_ind, ano_ref=None, mes_ref=None):
+    if df_ind is None or df_ind.empty:
+        return pd.DataFrame(), "3º Bimestre"
+    df_pp = df_ind[df_ind["Subcategoria"].apply(lambda x: "PAULISTA" in normalizar_texto(x))].copy()
+    if df_pp.empty:
+        _, rot = obter_edicao_mais_atual_prova_paulista(df_ind, ano_ref, mes_ref)
+        return df_pp, rot
+
+    bim_alvo, rot_alvo = obter_edicao_mais_atual_prova_paulista(df_ind, ano_ref, mes_ref)
+    df_pp_bim = df_pp[df_pp["Periodo"].apply(lambda x: bool(re.search(rf"\b{bim_alvo}\s*[º°O]?\s*BIM", normalizar_texto(x))))]
+    if not df_pp_bim.empty:
+        if ano_ref:
+            df_pp_ano = df_pp_bim[df_pp_bim["Periodo"].astype(str).str.contains(str(ano_ref), na=False)]
+            if not df_pp_ano.empty:
+                return df_pp_ano, rot_alvo
+        return df_pp_bim, rot_alvo
+    return df_pp, rot_alvo
+
+# ==============================================================================
+# MOTOR DE PRIORIZAÇÃO PÓS-FILTRO POR INDICADOR
+# ==============================================================================
+def construir_opcoes_criterio_prioridade(df_ind, ano_ref=None, mes_ref=None):
+    _, rot_pp_atual = obter_edicao_mais_atual_prova_paulista(df_ind, ano_ref=ano_ref, mes_ref=mes_ref)
+    opcoes = {
+        "TODOS": "Todos os Indicadores (Análise Multi-Indicador Consolidada)",
+        "PP_ATUAL": f"Prova Paulista — Edição Atual ({rot_pp_atual})",
+        "FREQUENCIA": "Frequência Escolar",
+        "PLATAFORMA": "Plataformas Digitais (Todas)"
+    }
+    if df_ind is not None and not df_ind.empty:
+        # Adiciona dinamicamente outras avaliações encontradas nas subpastas (SARESP, SAEB, ENEM, Diagnóstica, etc.)
+        avals_presentes = sorted([
+            s for s in df_ind[df_ind["Tipo_Indicador"] == "AVALIACAO"]["Subcategoria"].dropna().unique().tolist()
+            if "PAULISTA" not in normalizar_texto(s) and s != "Outras Avaliações"
+        ])
+        for av_nome in avals_presentes:
+            opcoes[f"AVAL::{av_nome}"] = f"Avaliação — {av_nome}"
+
+        # Adiciona dinamicamente todas as plataformas encontradas nas subpastas
+        plats_presentes = sorted([
+            s for s in df_ind[df_ind["Tipo_Indicador"] == "PLATAFORMA"]["Subcategoria"].dropna().unique().tolist()
+            if s != "Outras Plataformas"
+        ])
+        for pl_nome in plats_presentes:
+            opcoes[f"PLAT::{pl_nome}"] = f"Plataforma — {pl_nome}"
+    return opcoes
+
+def filtrar_base_por_criterio_prioridade(df_ind, criterio_chave, ano_ref=None, mes_ref=None):
     if df_ind is None or df_ind.empty:
         return pd.DataFrame()
     df_b = df_ind.copy()
 
     if criterio_chave == "TODOS":
         return df_b
-    elif criterio_chave == "PP_3BIM":
-        return df_b[
-            (df_b["Subcategoria"].apply(lambda x: "PAULISTA" in normalizar_texto(x))) &
-            (df_b["Periodo"].apply(lambda x: "3" in normalizar_texto(x)))
-        ]
-    elif criterio_chave == "PP_1BIM":
-        return df_b[
-            (df_b["Subcategoria"].apply(lambda x: "PAULISTA" in normalizar_texto(x))) &
-            (df_b["Periodo"].apply(lambda x: "1" in normalizar_texto(x)))
-        ]
-    elif criterio_chave == "PP_2BIM":
-        return df_b[
-            (df_b["Subcategoria"].apply(lambda x: "PAULISTA" in normalizar_texto(x))) &
-            (df_b["Periodo"].apply(lambda x: "2" in normalizar_texto(x)))
-        ]
-    elif criterio_chave == "PP_4BIM":
-        return df_b[
-            (df_b["Subcategoria"].apply(lambda x: "PAULISTA" in normalizar_texto(x))) &
-            (df_b["Periodo"].apply(lambda x: "4" in normalizar_texto(x)))
-        ]
-    elif criterio_chave == "PP_TODAS":
-        return df_b[df_b["Subcategoria"].apply(lambda x: "PAULISTA" in normalizar_texto(x))]
-    elif criterio_chave == "SARESP":
-        return df_b[df_b["Subcategoria"].apply(lambda x: "SARESP" in normalizar_texto(x))]
+    elif criterio_chave == "PP_ATUAL":
+        df_pp_atual, _ = filtrar_prova_paulista_mais_atual(df_b, ano_ref=ano_ref, mes_ref=mes_ref)
+        return df_pp_atual
     elif criterio_chave == "FREQUENCIA":
         return df_b[df_b["Tipo_Indicador"] == "FREQUENCIA"]
     elif criterio_chave == "PLATAFORMA":
         return df_b[df_b["Tipo_Indicador"] == "PLATAFORMA"]
-    elif criterio_chave == "DIAGNOSTICA":
-        return df_b[df_b["Subcategoria"].apply(lambda x: "DIAGNOSTICA" in normalizar_texto(x))]
-    elif criterio_chave == "SAEB":
-        return df_b[df_b["Subcategoria"].apply(lambda x: "SAEB" in normalizar_texto(x))]
-    elif criterio_chave == "ENEM":
-        return df_b[df_b["Subcategoria"].apply(lambda x: "ENEM" in normalizar_texto(x))]
+    elif criterio_chave.startswith("AVAL::"):
+        nome_av = normalizar_texto(criterio_chave.split("::", 1)[1])
+        return df_b[(df_b["Tipo_Indicador"] == "AVALIACAO") & (df_b["Subcategoria"].apply(lambda x: nome_av in normalizar_texto(x)))]
     elif criterio_chave.startswith("PLAT::"):
         nome_plat = normalizar_texto(criterio_chave.split("::", 1)[1])
         return df_b[(df_b["Tipo_Indicador"] == "PLATAFORMA") & (df_b["Subcategoria"].apply(lambda x: nome_plat in normalizar_texto(x)))]
     return df_b
 
-def calcular_metricas_por_escola_pos_filtro(df_filtrado, criterio_chave):
-    """
-    Calcula a média e o resumo detalhado por escola após aplicar o filtro de indicador.
-    Se criterio_chave == 'TODOS', analisa equilibradamente Avaliações + Plataformas + Frequência.
-    """
+def calcular_metricas_por_escola_pos_filtro(df_filtrado, criterio_chave, nome_crit_label=""):
     if df_filtrado is None or df_filtrado.empty:
         return pd.DataFrame(columns=["Escola", "Indicador_Medio_Pct", "Indice_Criticidade_Pct", "Detalhe_Indicador", "Farol"])
 
@@ -767,12 +927,12 @@ def calcular_metricas_por_escola_pos_filtro(df_filtrado, criterio_chave):
     )
     grp["Indicador_Medio_Pct"] = grp["Indicador_Medio_Pct"].round(1)
     grp["Indice_Criticidade_Pct"] = (100.0 - grp["Indicador_Medio_Pct"]).round(1)
-    nome_crit = OPCOES_CRITERIO_PRIORIDADE.get(criterio_chave, criterio_chave.replace("PLAT::", "Plataforma: "))
-    grp["Detalhe_Indicador"] = grp["Indicador_Medio_Pct"].apply(lambda v: f"{nome_crit}: {v:.1f}%")
+    rot_uso = nome_crit_label or criterio_chave.replace("PLAT::", "Plataforma: ").replace("AVAL::", "Avaliação: ")
+    grp["Detalhe_Indicador"] = grp["Indicador_Medio_Pct"].apply(lambda v: f"{rot_uso}: {v:.1f}%")
     grp["Farol"] = grp["Indicador_Medio_Pct"].apply(classificar_farol_nivel)
     return grp
 
-def obter_ranking_escolas_prioritarias(df_ind, pasta_pec, escolas_delimitadas, criterio_chave="TODOS", df_recomp_sheets=None):
+def obter_ranking_escolas_prioritarias(df_ind, pasta_pec, escolas_delimitadas, criterio_chave="TODOS", df_recomp_sheets=None, ano_ref=None, mes_ref=None, nome_crit_label=""):
     # Recomposição com lista pré-estabelecida quando o filtro geral "TODOS" está ativo
     if pasta_pec == "RECOMPOSICAO" and criterio_chave == "TODOS" and df_recomp_sheets is not None and not df_recomp_sheets.empty:
         cols_r = {normalizar_texto(c): c for c in df_recomp_sheets.columns}
@@ -787,17 +947,19 @@ def obter_ranking_escolas_prioritarias(df_ind, pasta_pec, escolas_delimitadas, c
             contagem["Farol"] = "Lista Prioritária Recomposição"
             return contagem.rename(columns={"Escola_Oficial": "Escola"})
 
-    df_filtrado = filtrar_base_por_criterio_prioridade(df_ind, criterio_chave)
-    df_metricas = calcular_metricas_por_escola_pos_filtro(df_filtrado, criterio_chave)
-    nome_crit_label = OPCOES_CRITERIO_PRIORIDADE.get(criterio_chave, criterio_chave.replace("PLAT::", "Plataforma: "))
+    df_filtrado = filtrar_base_por_criterio_prioridade(df_ind, criterio_chave, ano_ref=ano_ref, mes_ref=mes_ref)
+    df_metricas = calcular_metricas_por_escola_pos_filtro(df_filtrado, criterio_chave, nome_crit_label=nome_crit_label)
+    rot_label = nome_crit_label or criterio_chave
 
-    # PEC Qualidade da Aula: ordena sua carteira de escolas atribuídas com base no indicador filtrado
-    if pasta_pec == "QUALIDADE DA AULA" and escolas_delimitadas:
-        esc_oficiais = [corresponder_escola_oficial(e) for e in escolas_delimitadas if str(e).strip()]
+    # PEC Qualidade da Aula: restringe ESTRITAMENTE às suas escolas de acompanhamento conforme o Sheets
+    if pasta_pec == "QUALIDADE DA AULA":
+        esc_oficiais = [corresponder_escola_oficial(e) for e in (escolas_delimitadas or []) if str(e).strip()]
+        if not esc_oficiais:
+            return pd.DataFrame(columns=["Prioridade", "Escola", "Indicador_Medio_Pct", "Indice_Criticidade_Pct", "Detalhe_Indicador", "Farol"])
         rows_q = []
         for esc in esc_oficiais:
             media_val = np.nan
-            det_val = f"Sem dado em {nome_crit_label}"
+            det_val = f"Sem dado em {rot_label}"
             farol_val = "Sem Dado no Filtro"
             if not df_metricas.empty:
                 sub_e = df_metricas[df_metricas["Escola"].apply(lambda x: normalizar_texto(esc) in normalizar_texto(x) or normalizar_texto(x) in normalizar_texto(esc))]
@@ -826,7 +988,7 @@ def obter_ranking_escolas_prioritarias(df_ind, pasta_pec, escolas_delimitadas, c
                 "Escola": esc,
                 "Indicador_Medio_Pct": np.nan,
                 "Indice_Criticidade_Pct": -1.0,
-                "Detalhe_Indicador": f"Sem dado em {nome_crit_label}",
+                "Detalhe_Indicador": f"Sem dado em {rot_label}",
                 "Farol": "Sem Dado no Filtro"
             }
             for esc in ESCOLAS_URE_MIRACATU
@@ -844,7 +1006,7 @@ def obter_ranking_escolas_prioritarias(df_ind, pasta_pec, escolas_delimitadas, c
         "Escola": ESCOLAS_URE_MIRACATU[:30],
         "Indicador_Medio_Pct": [np.nan] * len(ESCOLAS_URE_MIRACATU[:30]),
         "Indice_Criticidade_Pct": [-1.0] * len(ESCOLAS_URE_MIRACATU[:30]),
-        "Detalhe_Indicador": [f"Aguardando planilhas de {nome_crit_label} no Drive"] * len(ESCOLAS_URE_MIRACATU[:30]),
+        "Detalhe_Indicador": [f"Aguardando planilhas de {rot_label} no Drive"] * len(ESCOLAS_URE_MIRACATU[:30]),
         "Farol": ["Sem Dado no Filtro"] * len(ESCOLAS_URE_MIRACATU[:30])
     })
 
@@ -1676,6 +1838,8 @@ if not st.session_state["autenticado"]:
                         col_esc = next((v for k, v in cols_u.items() if "ESCOLA" in k), None)
                         col_senha = next((v for k, v in cols_u.items() if "SENHA" in k or "PIN" in k), None)
 
+                        cols_esc_todas = [v for k, v in cols_u.items() if any(x in k for x in ["ESCOLA", "UNIDADE", "CARTEIRA", "UE"])]
+                        col_subpasta = next((v for k, v in cols_u.items() if any(x in k for x in ["SUBPASTA", "SEGMENTO", "ESPECIFICA"])), None)
                         if col_email:
                             match = df_usuarios[df_usuarios[col_email].astype(str).str.strip().str.lower() == email_in.strip().lower()]
                             if not match.empty:
@@ -1687,16 +1851,33 @@ if not st.session_state["autenticado"]:
                                 if acesso_ok:
                                     if col_nome and pd.notna(row_u[col_nome]):
                                         nome_encontrado = str(row_u[col_nome]).strip()
-                                    if col_pasta and pd.notna(row_u[col_pasta]):
-                                        pasta_encontrada = mapear_pasta_chave(row_u[col_pasta]) or pasta_fallback
-                                    if col_comp and pd.notna(row_u[col_comp]):
-                                        comp_encontrado = str(row_u[col_comp]).strip()
-                                    if col_esc:
-                                        escolas_encontradas = [
-                                            corresponder_escola_oficial(e.strip())
-                                            for e in match[col_esc].dropna().astype(str).tolist()
-                                            for e in re.split(r"[,;/]", e) if e.strip()
-                                        ]
+                                    pasta_bruta_u = str(row_u[col_pasta]).strip() if col_pasta and pd.notna(row_u[col_pasta]) else ""
+                                    if pasta_bruta_u:
+                                        pasta_encontrada = mapear_pasta_chave(pasta_bruta_u) or pasta_fallback
+                                    partes_comp_u = []
+                                    if col_comp:
+                                        for val_c in match[col_comp].dropna().astype(str).tolist():
+                                            if val_c.strip() and val_c.strip().lower() not in ["nan", "none"]:
+                                                partes_comp_u.append(val_c.strip())
+                                    if col_subpasta:
+                                        for val_sp in match[col_subpasta].dropna().astype(str).tolist():
+                                            if val_sp.strip() and val_sp.strip().lower() not in ["nan", "none"]:
+                                                partes_comp_u.append(val_sp.strip())
+                                    # Se a própria coluna Pasta trouxer subpasta (ex: "Desenvolvimento Curricular - Matemática")
+                                    if "-" in pasta_bruta_u and "DESENVOLVIMENTO" in normalizar_texto(pasta_bruta_u):
+                                        sub_p_txt = pasta_bruta_u.split("-", 1)[1].strip()
+                                        if sub_p_txt:
+                                            partes_comp_u.append(sub_p_txt)
+                                    if partes_comp_u:
+                                        comp_encontrado = ", ".join(list(dict.fromkeys(partes_comp_u)))
+
+                                    lista_esc_raw = []
+                                    for c_e_item in cols_esc_todas:
+                                        for cel_e in match[c_e_item].dropna().astype(str).tolist():
+                                            for pedaco in re.split(r"[,;/\n]", cel_e):
+                                                if pedaco.strip() and pedaco.strip().lower() not in ["nan", "none", "-"]:
+                                                    lista_esc_raw.append(corresponder_escola_oficial(pedaco.strip()))
+                                    escolas_encontradas = list(dict.fromkeys(lista_esc_raw))
 
                     if acesso_ok:
                         st.session_state["autenticado"] = True
@@ -1729,7 +1910,13 @@ df_atpc_global = pd.concat(dfs_atpc_lista, ignore_index=True).drop_duplicates() 
 
 df_ind_usuario = (
     df_ind_global if eh_cec_ou_at
-    else filtrar_indicadores_por_pec(df_ind_global, pasta_atual, comp_atual, escolas_usuario if eh_pec_qualidade else None)
+    else filtrar_indicadores_por_pec(
+        df_ind_global,
+        pasta_atual,
+        comp_atual,
+        escolas_usuario if eh_pec_qualidade else None,
+        df_pastas_raw=df_pastas_raw
+    )
 )
 
 # ==============================================================================
@@ -1758,12 +1945,14 @@ st.caption("Planejamento Mensal Integrado, Indicadores Hierárquicos e Acompanha
 
 lista_abas = [
     "📋 Plano de Trabalho & Planner Mensal",
-    "📊 Indicadores (Avaliações, Plataformas & Frequência)",
+    "📝 Avaliações",
+    "💻 Plataformas Digitais",
+    "🏫 Frequência Escolar",
     "📅 Agenda SEDUC, CEC & Feriados",
     "📚 Diretrizes das Pastas (Res. SEDUC 01/2026)"
 ]
 if eh_cec_ou_at:
-    lista_abas.insert(2, "🛡️ Painel Exclusivo CEC (Confronto & Fechamento)")
+    lista_abas.insert(4, "🛡️ Painel Exclusivo CEC (Confronto & Fechamento)")
 
 abas = st.tabs(lista_abas)
 
@@ -1772,15 +1961,7 @@ with abas[0]:
     st.subheader("Elaboração do Plano de Trabalho (Modelo Oficial URE Miracatu)")
     st.caption("Submeta o arquivo gerado na pasta do Google Drive até o 2º dia útil do mês. Após cada visita, deposite o Termo de Visita em PDF na sua pasta do Drive.")
 
-    # Monta dinamicamente as opções de indicadores disponíveis (Prova Paulista 3º Bimestre, SARESP, Frequência, Plataformas e Todos)
-    opcoes_criterio_dict = dict(OPCOES_CRITERIO_PRIORIDADE)
-    if not df_ind_usuario.empty:
-        plats_presentes = sorted(df_ind_usuario[df_ind_usuario["Tipo_Indicador"] == "PLATAFORMA"]["Subcategoria"].dropna().unique().tolist())
-        for pl_nome in plats_presentes:
-            if pl_nome != "Outras Plataformas":
-                opcoes_criterio_dict[f"PLAT::{pl_nome}"] = f"Plataforma — {pl_nome}"
-
-    # 1. Seletor do Mês e Ano do Planejamento (ATPCs são lidas automaticamente do Google Drive / Sheets)
+    # 1. Seletor do Mês e Ano do Planejamento (ATPCs e Prova Paulista mais atual são identificadas automaticamente)
     c_top1, c_top2 = st.columns(2)
     with c_top1:
         mes_plano = st.selectbox(
@@ -1792,6 +1973,9 @@ with abas[0]:
         )
     with c_top2:
         ano_plano = st.number_input("Ano do Plano:", min_value=2025, max_value=2030, value=datetime.now().year, key="ano_planner_top")
+
+    # Monta dinamicamente as opções de indicadores já detectando a Prova Paulista mais atual do período
+    opcoes_criterio_dict = construir_opcoes_criterio_prioridade(df_ind_usuario, ano_ref=ano_plano, mes_ref=mes_plano)
 
     st.markdown("---")
 
@@ -1812,13 +1996,16 @@ with abas[0]:
             help="Selecione o indicador (Prova Paulista 3º Bimestre, SARESP, Frequência, Plataforma ou Todos) para listar abaixo as escolas prioritárias pós-filtro."
         )
 
-        # Calcula o ranking pós-filtro conforme o indicador escolhido
+        # Calcula o ranking pós-filtro conforme o indicador escolhido (usando a Prova Paulista mais atual do período)
         df_ranking_prio = obter_ranking_escolas_prioritarias(
             df_ind_usuario,
             pasta_atual,
             escolas_usuario,
             criterio_chave=criterio_prio_sel,
-            df_recomp_sheets=df_recomposicao_sheets
+            df_recomp_sheets=df_recomposicao_sheets,
+            ano_ref=ano_plano,
+            mes_ref=mes_plano,
+            nome_crit_label=opcoes_criterio_dict.get(criterio_prio_sel, "")
         )
 
         # Monta lista pós-filtro com rótulos ricos mostrando posição de prioridade e índice do indicador
@@ -1840,7 +2027,8 @@ with abas[0]:
                 opcoes_locais_rotulos.append(rotulo)
                 mapa_rotulo_para_escola[rotulo] = esc_nome
         else:
-            for esc_nome in (escolas_usuario if escolas_usuario else ESCOLAS_URE_MIRACATU):
+            lista_esc_fb = escolas_usuario if (eh_pec_qualidade or escolas_usuario) else ESCOLAS_URE_MIRACATU
+            for esc_nome in lista_esc_fb:
                 opcoes_locais_rotulos.append(esc_nome)
                 mapa_rotulo_para_escola[esc_nome] = esc_nome
 
@@ -2091,64 +2279,120 @@ with abas[0]:
             else:
                 st.success("✅ Todas as escolas previstas no seu Plano de Trabalho possuem Termo de Visita registrado no Drive.")
 
-# --- ABA 2: INDICADORES HIERÁRQUICOS (AVALIAÇÕES, PLATAFORMAS E FREQUÊNCIA) ---
-with abas[1]:
-    st.subheader(f"Indicadores Pedagógicos — {pasta_atual} ({comp_atual})")
-    if not eh_cec_ou_at:
-        regras_info = obter_regras_atuacao_pec(pasta_atual, comp_atual)
-        if regras_info:
-            st.info(f"🎯 **Filtro automático da sua pasta de atuação:** Componentes `{', '.join(regras_info['componentes'])}` | Plataformas `{', '.join(regras_info['plataformas'])}` + Frequência.")
-
-    col_drv, col_up = st.columns([2, 1])
-    with col_drv:
-        if "COLE_AQUI" in GOOGLE_DRIVE_API_KEY:
-            st.warning("Configure `GOOGLE_DRIVE_API_KEY` nos Secrets do Streamlit para leitura automática das pastas do Google Drive.")
+def exibir_banner_perfil_indicadores():
+    if eh_cec_ou_at:
+        st.caption(f"📂 {qtd_arqs_drive} arquivo(s) sincronizado(s) do Google Drive — Visão Global da URE Miracatu.")
+    elif eh_pec_qualidade:
+        if escolas_usuario:
+            st.info(f"🏫 **Carteira Qualidade da Aula (Google Sheets):** {', '.join(escolas_usuario)} — Exibindo exclusivamente suas escolas de acompanhamento com **todas as plataformas digitais** disponíveis.")
         else:
-            st.success(f"📂 {qtd_arqs_drive} arquivo(s) sincronizado(s) do Google Drive.")
+            st.warning("⚠️ Nenhuma escola de acompanhamento foi localizada para o seu e-mail na aba `Usuarios` do Google Sheets. Verifique o cadastro da sua carteira de escolas.")
+    else:
+        regras_info = obter_regras_atuacao_pec(pasta_atual, comp_atual, df_pastas_raw=df_pastas_raw)
+        if regras_info:
+            comps_txt = ", ".join(regras_info["componentes"]) if regras_info.get("componentes") else "Todos"
+            plats_txt = ", ".join(regras_info["plataformas"]) if regras_info.get("plataformas") else "Nenhuma específica"
+            st.info(f"🎯 **Filtro específico da sua pasta ({pasta_atual} — {comp_atual}):** Componentes `{comps_txt}` | Plataformas `{plats_txt}`.")
 
-    with col_up:
-        arquivo_bi = st.file_uploader("Testar planilha avulsa (.xlsx / .csv):", type=["xlsx", "csv"])
-        if arquivo_bi is not None:
-            df_raw_up = pd.read_csv(arquivo_bi) if arquivo_bi.name.endswith(".csv") else pd.read_excel(arquivo_bi)
-            df_pad_up = padronizar_planilha_bruta(df_raw_up, arquivo_bi.name)
-            df_ind_usuario = pd.concat([df_ind_usuario, df_pad_up], ignore_index=True)
+# --- ABA 2: AVALIAÇÕES (COM SUBPASTAS DINÂMICAS E PROVA PAULISTA MAIS ATUAL) ---
+with abas[1]:
+    st.subheader(f"📝 Avaliações — {pasta_atual} ({comp_atual})")
+    exibir_banner_perfil_indicadores()
 
-    sub_aval, sub_plat, sub_freq = st.tabs([
-        "📝 Avaliações (Prova Paulista, SARESP, SAEB, ENEM, Diagnóstica)",
-        "💻 Plataformas Digitais (Khan, Matific, Speak, Leia SP...)",
-        "🏫 Frequência Escolar"
-    ])
+    df_av = df_ind_usuario[df_ind_usuario["Tipo_Indicador"] == "AVALIACAO"] if not df_ind_usuario.empty else pd.DataFrame()
 
-    with sub_aval:
-        df_av = df_ind_usuario[df_ind_usuario["Tipo_Indicador"] == "AVALIACAO"] if not df_ind_usuario.empty else pd.DataFrame()
-        c_av1, c_av2 = st.columns(2)
-        with c_av1:
-            tipo_prova = st.selectbox(
-                "Selecione a Avaliação:",
-                ["Prova Paulista", "SARESP", "SAEB", "ENEM", "Avaliação Diagnóstica", "Todas as Avaliações"]
-            )
-        with c_av2:
-            if tipo_prova == "Prova Paulista":
-                periodo_filtro = st.selectbox("Bimestre (Prova Paulista):", ["Todos os Bimestres", "1º Bimestre", "2º Bimestre", "3º Bimestre", "4º Bimestre"])
-            elif tipo_prova in ["SARESP", "SAEB", "ENEM", "Avaliação Diagnóstica"]:
-                anos_disp = sorted(df_av["Periodo"].dropna().unique().tolist()) if not df_av.empty else []
-                periodo_filtro = st.selectbox(f"Ano / Edição ({tipo_prova}):", ["Todos os Anos / Edições"] + anos_disp)
+    # Descobre dinamicamente todas as subpastas/avaliações presentes no Drive (garantindo Prova Paulista primeiro)
+    subs_av_drive = sorted([s for s in df_av["Subcategoria"].dropna().unique().tolist() if s != "Outras Avaliações"]) if not df_av.empty else []
+    opcoes_avaliacoes = ["Prova Paulista"] + [s for s in subs_av_drive if s != "Prova Paulista"]
+    for padrao_av in ["SARESP", "SAEB", "ENEM", "Avaliação Diagnóstica"]:
+        if padrao_av not in opcoes_avaliacoes:
+            opcoes_avaliacoes.append(padrao_av)
+    if len(opcoes_avaliacoes) > 1:
+        opcoes_avaliacoes.append("Todas as Avaliações")
+
+    c_av1, c_av2 = st.columns(2)
+    with c_av1:
+        tipo_prova = st.selectbox(
+            "Selecione a Avaliação / Subpasta:",
+            opcoes_avaliacoes,
+            key="sel_subpasta_avaliacao"
+        )
+
+    df_av_filt = df_av.copy()
+    with c_av2:
+        if tipo_prova == "Prova Paulista":
+            _, rot_pp_pesquisa = obter_edicao_mais_atual_prova_paulista(df_av_filt)
+            # Sem 4º Bimestre; padrão sempre na edição mais atual disponível
+            bims_pp_disp = [f"Edição Mais Atual ({rot_pp_pesquisa})"]
+            if not df_av_filt.empty:
+                df_pp_only = df_av_filt[df_av_filt["Subcategoria"] == "Prova Paulista"]
+                for b_n in [3, 2, 1]:
+                    if any(re.search(rf"\b{b_n}\s*[º°O]?\s*BIM", normalizar_texto(p)) for p in df_pp_only["Periodo"].dropna().unique()):
+                        bims_pp_disp.append(f"{b_n}º Bimestre")
+            periodo_filtro = st.selectbox("Edição / Bimestre (Prova Paulista):", bims_pp_disp, key="sel_bim_pp_pesquisa")
+        elif tipo_prova != "Todas as Avaliações":
+            anos_disp = sorted(df_av_filt[df_av_filt["Subcategoria"] == tipo_prova]["Periodo"].dropna().unique().tolist()) if not df_av_filt.empty else []
+            periodo_filtro = st.selectbox(f"Ano / Edição ({tipo_prova}):", ["Todos os Anos / Edições"] + anos_disp, key="sel_per_outra_av")
+        else:
+            periodo_filtro = "Todas as Edições"
+            st.caption("Consolidando todas as avaliações disponíveis nas subpastas.")
+
+    if not df_av_filt.empty:
+        if tipo_prova == "Prova Paulista":
+            if periodo_filtro.startswith("Edição Mais Atual"):
+                df_av_filt, rot_pp_usada = filtrar_prova_paulista_mais_atual(df_av_filt)
+                st.caption(f"✨ Analisando automaticamente a edição mais atual da Prova Paulista: **{rot_pp_usada}**.")
             else:
-                periodo_filtro = "Todos"
-
-        df_av_filt = df_av.copy()
-        if not df_av_filt.empty:
-            if tipo_prova != "Todas as Avaliações":
-                df_av_filt = df_av_filt[df_av_filt["Subcategoria"] == tipo_prova]
+                df_av_filt = df_av_filt[
+                    (df_av_filt["Subcategoria"] == "Prova Paulista") &
+                    (df_av_filt["Periodo"].str.contains(periodo_filtro, case=False, na=False))
+                ]
+        elif tipo_prova != "Todas as Avaliações":
+            df_av_filt = df_av_filt[df_av_filt["Subcategoria"] == tipo_prova]
             if not periodo_filtro.startswith("Todos"):
                 df_av_filt = df_av_filt[df_av_filt["Periodo"].str.contains(periodo_filtro, case=False, na=False)]
 
-        renderizar_tabela_hierarquica(df_av_filt, f"{tipo_prova} ({periodo_filtro})", "Proficiência Média (%)")
+    renderizar_tabela_hierarquica(df_av_filt, f"{tipo_prova} — {periodo_filtro}", "Proficiência Média (%)")
 
-    with sub_plat:
-        df_pl = df_ind_usuario[df_ind_usuario["Tipo_Indicador"] == "PLATAFORMA"] if not df_ind_usuario.empty else pd.DataFrame()
-        plats_lista = ["Todas as Plataformas", "Khan Academy", "Matific", "Speak", "Open English", "Leia SP", "Redação Paulista", "Alura"]
-        plat_escolhida = st.selectbox("Selecione a Plataforma Digital:", plats_lista)
+# --- ABA 3: PLATAFORMAS DIGITAIS (COM SUBPASTAS DINÂMICAS) ---
+with abas[2]:
+    st.subheader(f"💻 Plataformas Digitais — {pasta_atual} ({comp_atual})")
+    exibir_banner_perfil_indicadores()
+
+    df_pl = df_ind_usuario[df_ind_usuario["Tipo_Indicador"] == "PLATAFORMA"] if not df_ind_usuario.empty else pd.DataFrame()
+    subs_pl_drive = sorted([s for s in df_pl["Subcategoria"].dropna().unique().tolist() if s != "Outras Plataformas"]) if not df_pl.empty else []
+
+    if eh_cec_ou_at or eh_pec_qualidade:
+        lista_base_plats = ["Khan Academy", "Matific", "Speak", "Open English", "Leia SP", "Redação Paulista", "Alura"]
+        todas_plats_menu = list(dict.fromkeys(subs_pl_drive + lista_base_plats))
+    else:
+        todas_plats_menu = subs_pl_drive
+
+    if not todas_plats_menu:
+        st.info("Nenhuma plataforma digital vinculada ou carregada nas subpastas do Drive para o seu perfil atual.")
+    else:
+        opcoes_plats = ["Todas as Plataformas"] + todas_plats_menu
+        plat_escolhida = st.selectbox("Selecione a Plataforma Digital (Subpasta):", opcoes_plats, key="sel_subpasta_plataforma")
+
+        # Quando "Todas as Plataformas" está selecionado, exibe quadro comparativo entre todas as plataformas por escola
+        if plat_escolhida == "Todas as Plataformas" and not df_pl.empty and len(subs_pl_drive) >= 1:
+            st.markdown("#### 📊 Quadro Comparativo por Plataforma Digital (Engajamento / Uso %)")
+            df_pl_esc = df_pl[df_pl["Nivel_Granularidade"] == "ESCOLA"]
+            if df_pl_esc.empty:
+                df_pl_esc = df_pl
+            piv_plats = df_pl_esc.pivot_table(
+                index="Escola",
+                columns="Subcategoria",
+                values="Proficiencia_Pct",
+                aggfunc="mean"
+            ).round(1)
+            piv_plats["Média Geral Plataformas (%)"] = piv_plats.mean(axis=1).round(1)
+            cols_p_ord = ["Média Geral Plataformas (%)"] + [c for c in piv_plats.columns if c != "Média Geral Plataformas (%)"]
+            piv_plats = piv_plats[cols_p_ord].sort_values(by="Média Geral Plataformas (%)", ascending=True).reset_index()
+            cols_num_p = [c for c in piv_plats.columns if c != "Escola"]
+            styler_p = piv_plats.style.map(estilo_celula_farol, subset=cols_num_p).format({c: "{:.1f}%" for c in cols_num_p}, na_rep="-")
+            st.dataframe(styler_p, use_container_width=True, hide_index=True)
+            st.markdown("---")
 
         df_pl_filt = df_pl.copy()
         if not df_pl_filt.empty and plat_escolhida != "Todas as Plataformas":
@@ -2156,21 +2400,25 @@ with abas[1]:
 
         renderizar_tabela_hierarquica(df_pl_filt, f"Plataforma — {plat_escolhida}", "Engajamento / Uso (%)")
 
-    with sub_freq:
-        df_fr = df_ind_usuario[df_ind_usuario["Tipo_Indicador"] == "FREQUENCIA"] if not df_ind_usuario.empty else pd.DataFrame()
-        periodos_fr = sorted(df_fr["Periodo"].dropna().unique().tolist()) if not df_fr.empty else []
-        per_fr_sel = st.selectbox("Período / Semana de Frequência:", ["Todos os Períodos"] + periodos_fr)
+# --- ABA 4: FREQUÊNCIA ESCOLAR (COM SUBPASTAS / PERÍODOS DINÂMICOS) ---
+with abas[3]:
+    st.subheader(f"🏫 Frequência Escolar — {pasta_atual}")
+    exibir_banner_perfil_indicadores()
 
-        df_fr_filt = df_fr.copy()
-        if not df_fr_filt.empty and per_fr_sel != "Todos os Períodos":
-            df_fr_filt = df_fr_filt[df_fr_filt["Periodo"] == per_fr_sel]
+    df_fr = df_ind_usuario[df_ind_usuario["Tipo_Indicador"] == "FREQUENCIA"] if not df_ind_usuario.empty else pd.DataFrame()
+    subs_fr_drive = sorted(df_fr["Periodo"].dropna().unique().tolist()) if not df_fr.empty else []
+    per_fr_sel = st.selectbox("Selecione o Período / Subpasta de Frequência:", ["Todos os Períodos"] + subs_fr_drive, key="sel_subpasta_frequencia")
 
-        renderizar_tabela_hierarquica(df_fr_filt, f"Frequência Escolar ({per_fr_sel})", "Frequência Média (%)")
+    df_fr_filt = df_fr.copy()
+    if not df_fr_filt.empty and per_fr_sel != "Todos os Períodos":
+        df_fr_filt = df_fr_filt[df_fr_filt["Periodo"] == per_fr_sel]
+
+    renderizar_tabela_hierarquica(df_fr_filt, f"Frequência Escolar ({per_fr_sel})", "Frequência Média (%)")
 
 # --- ABA EXCLUSIVA DO CEC / AT: CONFRONTO & FECHAMENTO MENSAL ---
-idx_proxima_aba = 2
+idx_proxima_aba = 4
 if eh_cec_ou_at:
-    with abas[2]:
+    with abas[4]:
         st.subheader("🛡️ Painel Exclusivo CEC — Controle de Prazos (2º Dia Útil), Confronto & Justificativas")
         st.caption("Visão global de todos os PECs, confrontando Planos de Trabalho enviados até o 2º dia útil x Termos de Visita depositados no Google Drive.")
 
@@ -2223,7 +2471,7 @@ if eh_cec_ou_at:
                 file_name=f"Relatorio_Gerencial_CEC_URE_Miracatu_{datetime.now().strftime('%Y%m%d')}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
-    idx_proxima_aba = 3
+    idx_proxima_aba = 5
 
 # --- ABA AGENDA SEDUC, CEC & FERIADOS ---
 with abas[idx_proxima_aba]:
