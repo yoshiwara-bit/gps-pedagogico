@@ -132,7 +132,7 @@ def obter_regras_atuacao_pec(pasta_pec, componente_pec):
     if p_norm in ["CEC", "AT"] or c_norm in ["", "TODOS"]:
         if p_norm == "RECOMPOSICAO":
             return MAPA_ATUACAO_COMPONENTES_PLATAFORMAS["RECOMPOSICAO"]
-        return None  # Sem filtro restritivo (CEC/AT enxergam tudo)
+        return None
 
     for chave_area, regras in MAPA_ATUACAO_COMPONENTES_PLATAFORMAS.items():
         if chave_area in c_norm or chave_area in p_norm:
@@ -147,7 +147,6 @@ def filtrar_indicadores_por_pec(df_ind, pasta_pec, componente_pec, escolas_pec=N
         return pd.DataFrame()
     df_f = df_ind.copy()
 
-    # Filtra escolas vinculadas ao PEC (se houver lista de escolas atribuídas ao PEC na aba Usuarios)
     if escolas_pec and "Escola" in df_f.columns:
         esc_norm = [normalizar_texto(e) for e in escolas_pec if str(e).strip()]
         if esc_norm:
@@ -236,7 +235,6 @@ def padronizar_planilha_bruta(df_raw, nome_arquivo="", pasta_origem=""):
     cols_norm = {normalizar_texto(c): c for c in df_raw.columns}
     siglas_presentes = [c_orig for c_n, c_orig in cols_norm.items() if c_n in MAPA_SIGLAS_BI]
 
-    # Caso 1: Matriz BI SEDUC (SARESP livre / Prova Paulista / Diagnóstica)
     if siglas_presentes and ("EXPORT TURMA" in cols_norm or "EXPORT ESCOLAS" in cols_norm):
         escola_detectada = "Geral URE Miracatu"
         for val in df_raw.iloc[:, 0].dropna().astype(str):
@@ -306,7 +304,6 @@ def padronizar_planilha_bruta(df_raw, nome_arquivo="", pasta_origem=""):
                 })
         return pd.DataFrame(registros)
 
-    # Caso 2: Planilhas tabulares (Avaliações, Frequência Semanal ou Plataformas Digitais)
     mapa = {}
     for col in df_raw.columns:
         c_low = normalizar_texto(col).lower()
@@ -337,7 +334,6 @@ def padronizar_planilha_bruta(df_raw, nome_arquivo="", pasta_origem=""):
 
     df_pad = df_raw.rename(columns=mapa).copy()
 
-    # Identifica o tipo de indicador pela subpasta do Drive ou nome do arquivo
     if "FREQUENCIA" in pasta_up or "FREQUENCIA" in nome_up:
         tipo_ind = "FREQUENCIA"
     elif "PLATAFORMA" in pasta_up or any(p in nome_up for p in ["PLATAFORMA", "SPEAK", "OPEN", "KHAN", "MATIFIC", "LEIA"]):
@@ -409,14 +405,6 @@ def carregar_eventos_gcal(url_ics):
 
 @st.cache_data(ttl=180)
 def sincronizar_pasta_drive_completo(folder_id, api_key):
-    """
-    Lê todas as subpastas da pasta raiz do Google Drive:
-      - Avaliações (SARESP livre, Prova Paulista, Diagnósticas)
-      - Frequência Semanal das Escolas
-      - Plataformas (Speak, Open English, Khan Academy, Matific, Leia SP, Redação, Alura)
-      - Planos de Trabalho (.docx) enviados pelos PECs (verifica data vs 2º dia útil)
-      - Termos de Visita (.pdf) enviados pelos PECs por escola/dia
-    """
     if not api_key or "COLE_AQUI" in api_key:
         return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), 0
 
@@ -457,13 +445,10 @@ def sincronizar_pasta_drive_completo(folder_id, api_key):
 
                     arq_bytes = BytesIO(urllib.request.urlopen(dl_url, timeout=20).read())
                     n_low = f_name.lower()
-                    pasta_low = caminho_pasta.lower()
 
-                    # 1. Termos de Visita em PDF
                     if n_low.endswith(".pdf") or f_mime == "application/pdf":
                         leitor = PdfReader(arq_bytes)
-                        texto_pdf = "
-".join([p.extract_text() or "" for p in leitor.pages])
+                        texto_pdf = "\n".join([p.extract_text() or "" for p in leitor.pages])
                         pec_nome = os.path.basename(caminho_pasta).replace("Pasta_PEC_", "").strip() or "PEC"
                         escola_enc = next((e for e in ESCOLAS_URE_MIRACATU if normalizar_texto(e) in normalizar_texto(texto_pdf) or normalizar_texto(e) in normalizar_texto(f_name)), "Escola não identificada no PDF")
                         m_data = re.search(r"(\d{2}/\d{2}/\d{4})", texto_pdf)
@@ -476,15 +461,12 @@ def sincronizar_pasta_drive_completo(folder_id, api_key):
                         })
                         qtd_arquivos += 1
 
-                    # 2. Planos de Trabalho em Word (.docx)
                     elif (n_low.endswith(".docx") or f_mime == "application/vnd.google-apps.document") and not n_low.startswith("00_modelo"):
                         doc_p = Document(arq_bytes)
-                        texto_doc = "
-".join([p.text for p in doc_p.paragraphs])
+                        texto_doc = "\n".join([p.text for p in doc_p.paragraphs])
                         for t in doc_p.tables:
                             for r in t.rows:
-                                texto_doc += "
-" + " | ".join([c.text.strip() for c in r.cells])
+                                texto_doc += "\n" + " | ".join([c.text.strip() for c in r.cells])
 
                         pec_nome = os.path.basename(caminho_pasta).replace("Pasta_PEC_", "").strip()
                         if not pec_nome or "plano" in pec_nome.lower():
@@ -506,7 +488,6 @@ def sincronizar_pasta_drive_completo(folder_id, api_key):
                             })
                         qtd_arquivos += 1
 
-                    # 3. Planilhas de Avaliações, Frequência Semanal e Plataformas
                     elif n_low.endswith(".csv"):
                         df_l = pd.read_csv(arq_bytes)
                         df_p = padronizar_planilha_bruta(df_l, f_name, caminho_pasta)
@@ -556,8 +537,7 @@ def consolidar_pastas(df_p):
         df_c = df_c.dropna(subset=["Pasta", "Foco_Pedagogico"])
         if df_c.empty:
             return padrao
-        agrupado = df_c.groupby(["Pasta", "Resolucao"], as_index=False).agg({"Foco_Pedagogico": lambda x: "
-".join(x.astype(str))})
+        agrupado = df_c.groupby(["Pasta", "Resolucao"], as_index=False).agg({"Foco_Pedagogico": lambda x: "\n".join(x.astype(str))})
         agrupado["Pasta_Chave"] = agrupado["Pasta"].apply(mapear_pasta_chave)
         return agrupado
     except Exception:
@@ -619,16 +599,13 @@ TAREFAS_POR_PASTA = {
 def gerar_docx_plano(nome_pec, email_pec, pasta_pec, comp_pec, escola_sel, semana_str, cronograma_dias, obs_texto, df_prioridades_pec=None):
     doc = Document()
 
-    # Cabeçalho oficial URE Miracatu
     header = doc.sections[0].header
     p_cab = header.paragraphs[0]
     p_cab.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    r1 = p_cab.add_run("SECRETARIA DA EDUCAÇÃO DO ESTADO DE SÃO PAULO
-")
+    r1 = p_cab.add_run("SECRETARIA DA EDUCAÇÃO DO ESTADO DE SÃO PAULO\n")
     r1.bold = True
     r1.font.size = Pt(10)
-    r2 = p_cab.add_run("UNIDADE REGIONAL DE ENSINO DE MIRACATU — EQUIPE DE ESPECIALISTAS EM CURRÍCULO (EEC)
-")
+    r2 = p_cab.add_run("UNIDADE REGIONAL DE ENSINO DE MIRACATU — EQUIPE DE ESPECIALISTAS EM CURRÍCULO (EEC)\n")
     r2.bold = True
     r2.font.size = Pt(9.5)
     r3 = p_cab.add_run("PLANO DE TRABALHO / GUIA PEDAGÓGICO — ENTREGA ATÉ O 2º DIA ÚTIL DO MÊS")
@@ -640,17 +617,13 @@ def gerar_docx_plano(nome_pec, email_pec, pasta_pec, comp_pec, escola_sel, seman
 
     p_info = doc.add_paragraph()
     p_info.add_run("Especialista / PEC Responsável: ").bold = True
-    p_info.add_run(f"{nome_pec} ({email_pec})
-")
+    p_info.add_run(f"{nome_pec} ({email_pec})\n")
     p_info.add_run("Pasta / Área de Atuação: ").bold = True
-    p_info.add_run(f"{pasta_pec} — Componente: {comp_pec}
-")
+    p_info.add_run(f"{pasta_pec} — Componente: {comp_pec}\n")
     p_info.add_run("Unidade Escolar Prioritária: ").bold = True
-    p_info.add_run(f"{escola_sel}
-")
+    p_info.add_run(f"{escola_sel}\n")
     p_info.add_run("Período / Mês de Referência: ").bold = True
-    p_info.add_run(f"{semana_str}
-")
+    p_info.add_run(f"{semana_str}\n")
 
     doc.add_heading("1. Cronograma de Visitas e Ações Planejadas", level=2)
     tabela = doc.add_table(rows=1, cols=4)
@@ -686,12 +659,10 @@ def gerar_docx_plano(nome_pec, email_pec, pasta_pec, comp_pec, escola_sel, seman
         doc.add_heading("3. Pautas Formativas, Diagnóstico e Devolutivas", level=2)
         doc.add_paragraph(obs_texto.strip())
 
-    doc.add_paragraph("
-")
+    doc.add_paragraph("\n")
     p_ass = doc.add_paragraph()
     p_ass.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    p_ass.add_run("_________________________________________          _________________________________________
-")
+    p_ass.add_run("_________________________________________          _________________________________________\n")
     p_ass.add_run(f"PEC: {nome_pec}                                    CEC — Coordenador de Equipe Curricular")
 
     buf = BytesIO()
@@ -899,7 +870,6 @@ with abas[0]:
 
     obs_texto = st.text_area("Pautas Formativas, Diagnóstico de Indicadores e Encaminhamentos:", height=110)
 
-    # Prioridades filtradas da área do PEC para constar automaticamente no Word
     df_prio_word = pd.DataFrame()
     if not df_ind_usuario.empty:
         df_prio_word = df_ind_usuario[df_ind_usuario["Nivel"].astype(str).str.contains("Vermelho|Amarelo|Abaixo|Atenção", case=False, na=False)]
@@ -942,7 +912,6 @@ with abas[0]:
     with col_drv_link:
         st.link_button("📂 Abrir Pasta do Drive para Depositar Plano / Termos", URL_PASTA_DRIVE_GPS, use_container_width=True)
 
-    # Acompanhamento Individual do próprio PEC (Plano x Termos de Visita no Drive)
     if not eh_cec_ou_at and (not df_planos_drive.empty or not df_termos_drive.empty):
         st.markdown("---")
         st.markdown("#### 🔔 Meu Acompanhamento Mensal (Plano de Trabalho x Termos de Visita no Drive)")
