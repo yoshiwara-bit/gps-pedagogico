@@ -71,6 +71,26 @@ ESCOLAS_URE_MIRACATU = [
     "EE Veiga Junior Professor"
 ]
 
+DIAS_SEMANA_PT = {
+    0: "SEGUNDA-FEIRA",
+    1: "TERCA-FEIRA",
+    2: "QUARTA-FEIRA",
+    3: "QUINTA-FEIRA",
+    4: "SEXTA-FEIRA",
+    5: "SABADO",
+    6: "DOMINGO"
+}
+
+DIAS_SEMANA_LABEL = {
+    0: "Segunda-feira",
+    1: "Terça-feira",
+    2: "Quarta-feira",
+    3: "Quinta-feira",
+    4: "Sexta-feira",
+    5: "Sábado",
+    6: "Domingo"
+}
+
 def normalizar_texto(txt):
     if pd.isna(txt):
         return ""
@@ -200,7 +220,7 @@ def verificar_status_prazo_data(dt_envio, ano, mes):
     return f"FORA DO PRAZO (Enviado em {dt_envio.strftime('%d/%m/%Y')} | Limite: {limite.strftime('%d/%m/%Y')})"
 
 # ==============================================================================
-# CONVERSÃO DE PERCENTUAL (DECIMAL -> 0 a 100%) + DETECÇÃO DE PROVA / PERÍODO / NÍVEL
+# CONVERSÃO DE PERCENTUAL + DETECÇÃO DE PROVA / PERÍODO / NÍVEL
 # ==============================================================================
 def converter_para_percentual(val):
     if pd.isna(val):
@@ -210,7 +230,6 @@ def converter_para_percentual(val):
         return None
     try:
         num = float(s)
-        # Se vier como decimal do BI (ex: 0.6033 ou 1.0), converte para 60.33 ou 100.0
         if 0.0 <= num <= 1.0001:
             return round(num * 100.0, 1)
         return round(num, 1)
@@ -237,7 +256,6 @@ def classificar_farol_nivel(pct):
 def detectar_classificacao_arquivo(nome_arquivo, caminho_pasta=""):
     ref = normalizar_texto(f"{caminho_pasta} {nome_arquivo}")
 
-    # 1. Tipo Principal
     if "FREQUENCIA" in ref:
         tipo = "FREQUENCIA"
     elif any(k in ref for k in ["PLATAFORMA", "KHAN", "MATIFIC", "SPEAK", "OPEN ENGLISH", "LEIA SP", "REDACAO", "ALURA"]):
@@ -245,7 +263,6 @@ def detectar_classificacao_arquivo(nome_arquivo, caminho_pasta=""):
     else:
         tipo = "AVALIACAO"
 
-    # 2. Subcategoria (Prova ou Plataforma)
     if tipo == "PLATAFORMA":
         if "KHAN" in ref:
             sub = "Khan Academy"
@@ -279,7 +296,6 @@ def detectar_classificacao_arquivo(nome_arquivo, caminho_pasta=""):
         else:
             sub = "Outras Avaliações"
 
-    # 3. Período (Bimestre, Ano ou Semana/Mês)
     m_bim = re.search(r"([1-4])\s*[º°O]?\s*BIM", ref)
     m_ano = re.search(r"\b(202[3-9])\b", ref)
     m_sem = re.search(r"SEM(?:ANA)?\s*([0-9]{1,2})", ref)
@@ -292,7 +308,6 @@ def detectar_classificacao_arquivo(nome_arquivo, caminho_pasta=""):
     else:
         periodo = "Geral / Período Atual"
 
-    # 4. Escola pelo nome do arquivo ou pasta
     escola_pasta = None
     for esc in ESCOLAS_URE_MIRACATU:
         if normalizar_texto(esc) in ref or normalizar_texto(esc).replace("EE ", "") in ref:
@@ -327,8 +342,112 @@ def limpar_nome_escola_bi(nome_bruto):
     s_title = s.title()
     return s_title if s_title.upper().startswith("EE ") else f"EE {s_title}"
 
+def corresponder_escola_oficial(nome_bruto):
+    norm_b = normalizar_texto(limpar_nome_escola_bi(nome_bruto)).replace("EE ", "")
+    for esc in ESCOLAS_URE_MIRACATU:
+        norm_o = normalizar_texto(esc).replace("EE ", "")
+        if norm_b == norm_o or norm_b in norm_o or norm_o in norm_b:
+            return esc
+    return limpar_nome_escola_bi(nome_bruto)
+
 # ==============================================================================
-# TRADUTOR INTELIGENTE DE PLANILHAS (ESCOLA -> TURMA -> ESTUDANTE)
+# TRADUTOR DE PLANILHA DE ATPC POR ESCOLA (DIA DA SEMANA + HORÁRIO + ÁREA)
+# ==============================================================================
+def padronizar_planilha_atpc(df_raw):
+    """
+    Lê planilhas de ATPC (do Sheets ou upload) contendo Escola, Dia da Semana, Horário e Área/Componente.
+    Retorna DataFrame padronizado com: Escola, Dia_Semana_Num (0=Seg..6=Dom), Dia_Semana_Str, Horario, Area_Componente.
+    """
+    if df_raw is None or df_raw.empty:
+        return pd.DataFrame()
+
+    cols_norm = {normalizar_texto(c): c for c in df_raw.columns}
+    col_esc = next((v for k, v in cols_norm.items() if any(x in k for x in ["ESCOLA", "UNIDADE", "UE"])), None)
+    col_dia = next((v for k, v in cols_norm.items() if any(x in k for x in ["DIA", "SEMANA", "ATPC"])), None)
+    col_hor = next((v for k, v in cols_norm.items() if any(x in k for x in ["HORA", "HORARIO", "TURNO", "PERIODO"])), None)
+    col_area = next((v for k, v in cols_norm.items() if any(x in k for x in ["AREA", "COMPONENTE", "DISCIPLINA", "SEGMENTO"])), None)
+
+    if not col_esc or not col_dia:
+        return pd.DataFrame()
+
+    registros = []
+    for _, row in df_raw.iterrows():
+        esc_raw = str(row[col_esc]).strip() if pd.notna(row[col_esc]) else ""
+        dia_raw = normalizar_texto(row[col_dia]) if pd.notna(row[col_dia]) else ""
+        if not esc_raw or not dia_raw:
+            continue
+
+        escola_of = corresponder_escola_oficial(esc_raw)
+        horario_str = str(row[col_hor]).strip() if col_hor and pd.notna(row[col_hor]) else "Horário ATPC"
+        area_str = str(row[col_area]).strip() if col_area and pd.notna(row[col_area]) else "Geral / Todas as Áreas"
+
+        # Detecta um ou mais dias da semana na célula (ex: "Terça e Quinta")
+        dias_encontrados = []
+        if "SEG" in dia_raw or "2A" in dia_raw:
+            dias_encontrados.append(0)
+        if "TER" in dia_raw or "3A" in dia_raw:
+            dias_encontrados.append(1)
+        if "QUA" in dia_raw or "4A" in dia_raw:
+            dias_encontrados.append(2)
+        if "QUI" in dia_raw or "5A" in dia_raw:
+            dias_encontrados.append(3)
+        if "SEX" in dia_raw or "6A" in dia_raw:
+            dias_encontrados.append(4)
+        if "SAB" in dia_raw:
+            dias_encontrados.append(5)
+
+        for d_num in dias_encontrados:
+            registros.append({
+                "Escola": escola_of,
+                "Dia_Semana_Num": d_num,
+                "Dia_Semana_Str": DIAS_SEMANA_LABEL[d_num],
+                "Horario": horario_str,
+                "Area_Componente": area_str
+            })
+
+    return pd.DataFrame(registros).drop_duplicates() if registros else pd.DataFrame()
+
+def obter_atpcs_escola(df_atpc, escola_alvo, area_pec="Todos"):
+    if df_atpc is None or df_atpc.empty or not escola_alvo:
+        return pd.DataFrame()
+    esc_norm = normalizar_texto(escola_alvo)
+    sub = df_atpc[df_atpc["Escola"].apply(lambda x: esc_norm in normalizar_texto(x) or normalizar_texto(x) in esc_norm)].copy()
+    if sub.empty:
+        return sub
+    # Se houver filtro de área e existirem linhas específicas, prioriza as da área ou Gerais
+    if area_pec and normalizar_texto(area_pec) not in ["", "TODOS", "CEC", "AT"]:
+        a_norm = normalizar_texto(area_pec)
+        match_area = sub[sub["Area_Componente"].apply(lambda x: a_norm in normalizar_texto(x) or normalizar_texto(x) in a_norm or "GERAL" in normalizar_texto(x) or "TODAS" in normalizar_texto(x))]
+        if not match_area.empty:
+            return match_area
+    return sub
+
+def sugerir_datas_atpc_no_mes(ano, mes, df_atpc_escola, dias_bloqueados_set=None):
+    """Retorna lista de dicionários com datas do mês em que ocorre ATPC na escola selecionada (excluindo feriados/bloqueios)."""
+    if df_atpc_escola is None or df_atpc_escola.empty:
+        return []
+    feriados_sp = holidays.country_holidays("BR", subdiv="SP", years=[ano])
+    dias_bloqueados_set = dias_bloqueados_set or set()
+    _, num_dias = calendar.monthrange(ano, mes)
+
+    sugestoes = []
+    for dia in range(1, num_dias + 1):
+        dt = date(ano, mes, dia)
+        if dt in feriados_sp or dt in dias_bloqueados_set:
+            continue
+        matches = df_atpc_escola[df_atpc_escola["Dia_Semana_Num"] == dt.weekday()]
+        for _, m in matches.iterrows():
+            sugestoes.append({
+                "data": dt,
+                "data_str": dt.strftime("%d/%m/%Y"),
+                "dia_semana": m["Dia_Semana_Str"],
+                "horario": m["Horario"],
+                "area": m["Area_Componente"]
+            })
+    return sugestoes
+
+# ==============================================================================
+# TRADUTOR INTELIGENTE DE PLANILHAS DE INDICADORES (ESCOLA -> TURMA -> ESTUDANTE)
 # ==============================================================================
 def padronizar_planilha_bruta(df_raw, nome_arquivo="", pasta_origem=""):
     if df_raw is None or df_raw.empty:
@@ -338,7 +457,6 @@ def padronizar_planilha_bruta(df_raw, nome_arquivo="", pasta_origem=""):
     cols_norm = {normalizar_texto(c): c for c in df_raw.columns}
     siglas_presentes = [c_orig for c_n, c_orig in cols_norm.items() if c_n in MAPA_SIGLAS_BI]
 
-    # Tenta capturar NM_ESCOLA ou NM_TURMA da linha de rodapé "Filtros aplicados:" do BI SEDUC
     escola_rodape = None
     turma_rodape = None
     for val in df_raw.iloc[:, 0].dropna().astype(str):
@@ -347,7 +465,7 @@ def padronizar_planilha_bruta(df_raw, nome_arquivo="", pasta_origem=""):
                 trecho = val.split("NM_ESCOLA")[1]
                 for sep in [" é ", " = "]:
                     if sep in trecho:
-                        escola_rodape = limpar_nome_escola_bi(trecho.split(sep)[1].split("CD_DIRETORIA")[0].split("NM_TURMA")[0].strip())
+                        escola_rodape = corresponder_escola_oficial(trecho.split(sep)[1].split("CD_DIRETORIA")[0].split("NM_TURMA")[0].strip())
                         break
             if "NM_TURMA" in val:
                 trecho_t = val.split("NM_TURMA")[1]
@@ -357,18 +475,18 @@ def padronizar_planilha_bruta(df_raw, nome_arquivo="", pasta_origem=""):
                         break
 
     escola_padrao = escola_rodape or escola_detectada_path or "Geral URE Miracatu"
+    col_prof = next((c_orig for c_n, c_orig in cols_norm.items() if any(k in c_n for k in ["PROFESSOR", "DOCENTE"])), None)
+    col_recomp = next((c_orig for c_n, c_orig in cols_norm.items() if "RECOMPOSICAO" in c_n), None)
 
-    # CASO A: EXPORTAÇÃO PADRÃO BI SEDUC (COM SIGLAS MAT, PORT, ING, HIST, GEO...)
     if siglas_presentes:
         col_escola = next((c_orig for c_n, c_orig in cols_norm.items() if "EXPORT ESCOLA" in c_n or c_n == "ESCOLA" or c_n == "NM_ESCOLA"), None)
         col_turma = next((c_orig for c_n, c_orig in cols_norm.items() if "EXPORT TURMA" in c_n or c_n == "TURMA" or c_n == "NM_TURMA"), None)
-        col_aluno = next((c_orig for c_n, c_orig in cols_norm.items() if any(k in c_n for k in ["ALUNO", "ESTUDANTE", "NOME", "RA"]) and "TOTAL" not in c_n), None)
+        col_aluno = next((c_orig for c_n, c_orig in cols_norm.items() if any(k in c_n for k in ["ALUNO", "ESTUDANTE", "NOME", "RA"]) and "TOTAL" not in c_n and "PROFESSOR" not in c_n), None)
         col_part = next((c_orig for c_n, c_orig in cols_norm.items() if "PARTICIPACAO" in c_n or "FREQ" in c_n), None)
         col_total_al = next((c_orig for c_n, c_orig in cols_norm.items() if "TOTAL ALUNO" in c_n or "ESTUDANTE" == c_n), None)
 
         registros = []
         for _, row in df_raw.iterrows():
-            # Identifica chave principal da linha e descarta rodapés / linhas vazias
             valores_linha_str = " ".join([str(v) for v in row.values if pd.notna(v)])
             if not valores_linha_str.strip() or "Filtros aplicados" in valores_linha_str:
                 continue
@@ -376,24 +494,26 @@ def padronizar_planilha_bruta(df_raw, nome_arquivo="", pasta_origem=""):
             val_esc = str(row[col_escola]).strip() if col_escola and pd.notna(row[col_escola]) else ""
             val_tur = str(row[col_turma]).strip() if col_turma and pd.notna(row[col_turma]) else ""
             val_alu = str(row[col_aluno]).strip() if col_aluno and pd.notna(row[col_aluno]) else ""
+            val_prof = str(row[col_prof]).strip() if col_prof and pd.notna(row[col_prof]) else ""
+            val_rec = normalizar_texto(row[col_recomp]) in ["SIM", "TRUE", "1", "S", "X"] if col_recomp else False
 
             if any(x.lower() in ["total", "none", "nan"] for x in [val_esc, val_tur, val_alu] if x):
                 continue
 
             if col_aluno and val_alu:
                 nivel_gran = "ESTUDANTE"
-                escola_row = limpar_nome_escola_bi(val_esc) if val_esc else escola_padrao
+                escola_row = corresponder_escola_oficial(val_esc) if val_esc else escola_padrao
                 turma_row = val_tur if val_tur else (turma_rodape or "Turma Geral")
                 estudante_row = val_alu
             elif col_turma and val_tur:
                 nivel_gran = "TURMA"
-                escola_row = limpar_nome_escola_bi(val_esc) if val_esc else escola_padrao
+                escola_row = corresponder_escola_oficial(val_esc) if val_esc else escola_padrao
                 turma_row = val_tur
                 qtd_al = str(row[col_total_al]).strip() if col_total_al and pd.notna(row[col_total_al]) else "-"
                 estudante_row = f"Consolidado Turma ({qtd_al} alunos)"
             elif col_escola and val_esc:
                 nivel_gran = "ESCOLA"
-                escola_row = limpar_nome_escola_bi(val_esc)
+                escola_row = corresponder_escola_oficial(val_esc)
                 turma_row = "Consolidado da Escola"
                 estudante_row = "Consolidado Escola"
             else:
@@ -414,6 +534,8 @@ def padronizar_planilha_bruta(df_raw, nome_arquivo="", pasta_origem=""):
                     "Escola": escola_row,
                     "Turma": turma_row,
                     "Estudante": estudante_row,
+                    "Professor": val_prof,
+                    "Recomposicao": val_rec,
                     "Componente": comp_nome,
                     "Proficiencia_Pct": acerto_pct,
                     "Participacao_Pct": part_pct,
@@ -421,10 +543,9 @@ def padronizar_planilha_bruta(df_raw, nome_arquivo="", pasta_origem=""):
                 })
         return pd.DataFrame(registros)
 
-    # CASO B: PLANILHAS DE FREQUÊNCIA, PLATAFORMAS (KHAN, MATIFIC, SPEAK, LEIA SP) OU OUTROS FORMATOS
     col_esc = next((c_orig for c_n, c_orig in cols_norm.items() if any(k in c_n for k in ["ESCOLA", "UNIDADE", "UE"])), None)
     col_tur = next((c_orig for c_n, c_orig in cols_norm.items() if any(k in c_n for k in ["TURMA", "SERIE", "ANO"])), None)
-    col_alu = next((c_orig for c_n, c_orig in cols_norm.items() if any(k in c_n for k in ["ALUNO", "ESTUDANTE", "DISCENTE", "NOME"]) and "TOTAL" not in c_n), None)
+    col_alu = next((c_orig for c_n, c_orig in cols_norm.items() if any(k in c_n for k in ["ALUNO", "ESTUDANTE", "DISCENTE", "NOME"]) and "TOTAL" not in c_n and "PROFESSOR" not in c_n), None)
     col_comp = next((c_orig for c_n, c_orig in cols_norm.items() if any(k in c_n for k in ["COMPONENTE", "DISCIPLINA", "AREA"])), None)
     col_val = next((c_orig for c_n, c_orig in cols_norm.items() if any(k in c_n for k in ["FREQ", "USO", "ENGAJAMENTO", "TAXA", "ACERTO", "MEDIA", "NOTA", "PERCENTUAL", "PROFICIENCIA", "CONCLUSAO", "ATIVIDADE"])), None)
 
@@ -437,23 +558,25 @@ def padronizar_planilha_bruta(df_raw, nome_arquivo="", pasta_origem=""):
         val_esc = str(row[col_esc]).strip() if col_esc and pd.notna(row[col_esc]) else ""
         val_tur = str(row[col_tur]).strip() if col_tur and pd.notna(row[col_tur]) else ""
         val_alu = str(row[col_alu]).strip() if col_alu and pd.notna(row[col_alu]) else ""
+        val_prof = str(row[col_prof]).strip() if col_prof and pd.notna(row[col_prof]) else ""
+        val_rec = normalizar_texto(row[col_recomp]) in ["SIM", "TRUE", "1", "S", "X"] if col_recomp else False
 
         if any(x.lower() in ["total", "none", "nan"] for x in [val_esc, val_tur, val_alu] if x):
             continue
 
         if col_alu and val_alu:
             nivel_gran = "ESTUDANTE"
-            escola_row = limpar_nome_escola_bi(val_esc) if val_esc else escola_padrao
+            escola_row = corresponder_escola_oficial(val_esc) if val_esc else escola_padrao
             turma_row = val_tur if val_tur else (turma_rodape or "Turma Geral")
             estudante_row = val_alu
         elif col_tur and val_tur:
             nivel_gran = "TURMA"
-            escola_row = limpar_nome_escola_bi(val_esc) if val_esc else escola_padrao
+            escola_row = corresponder_escola_oficial(val_esc) if val_esc else escola_padrao
             turma_row = val_tur
             estudante_row = "Consolidado Turma"
         elif col_esc and val_esc:
             nivel_gran = "ESCOLA"
-            escola_row = limpar_nome_escola_bi(val_esc)
+            escola_row = corresponder_escola_oficial(val_esc)
             turma_row = "Consolidado da Escola"
             estudante_row = "Consolidado Escola"
         else:
@@ -472,6 +595,8 @@ def padronizar_planilha_bruta(df_raw, nome_arquivo="", pasta_origem=""):
             "Escola": escola_row,
             "Turma": turma_row,
             "Estudante": estudante_row,
+            "Professor": val_prof,
+            "Recomposicao": val_rec,
             "Componente": comp_row,
             "Proficiencia_Pct": val_pct,
             "Participacao_Pct": val_pct if tipo_ind == "FREQUENCIA" else None,
@@ -479,6 +604,257 @@ def padronizar_planilha_bruta(df_raw, nome_arquivo="", pasta_origem=""):
         })
 
     return pd.DataFrame(registros_b)
+
+# ==============================================================================
+# MOTOR DE PRIORIZAÇÃO POR PERFIL (PASTA TOP 30 | QUALIDADE | RECOMPOSIÇÃO)
+# ==============================================================================
+def obter_ranking_escolas_prioritarias(df_ind, pasta_pec, escolas_delimitadas, indicador_filtro="TODOS", subcategoria_filtro="TODAS", df_recomp_sheets=None):
+    if pasta_pec == "RECOMPOSICAO" and df_recomp_sheets is not None and not df_recomp_sheets.empty:
+        cols_r = {normalizar_texto(c): c for c in df_recomp_sheets.columns}
+        col_esc_r = next((v for k, v in cols_r.items() if "ESCOLA" in k or "UNIDADE" in k), None)
+        if col_esc_r:
+            df_r_clean = df_recomp_sheets.dropna(subset=[col_esc_r]).copy()
+            df_r_clean["Escola_Oficial"] = df_r_clean[col_esc_r].apply(corresponder_escola_oficial)
+            contagem = df_r_clean.groupby("Escola_Oficial").size().reset_index(name="Qtd_Estudantes_Recomposicao")
+            contagem = contagem.sort_values(by="Qtd_Estudantes_Recomposicao", ascending=False).head(30).reset_index(drop=True)
+            contagem.insert(0, "Prioridade", [f"{i+1}º" for i in range(len(contagem))])
+            contagem["Criterio"] = "Estudantes Pré-estabelecidos (Recomposição)"
+            return contagem.rename(columns={"Escola_Oficial": "Escola"})
+
+    df_base = df_ind.copy() if (df_ind is not None and not df_ind.empty) else pd.DataFrame()
+    if not df_base.empty:
+        if indicador_filtro != "TODOS":
+            df_base = df_base[df_base["Tipo_Indicador"] == indicador_filtro]
+        if subcategoria_filtro != "TODAS":
+            df_base = df_base[df_base["Subcategoria"] == subcategoria_filtro]
+
+    if pasta_pec == "QUALIDADE DA AULA" and escolas_delimitadas:
+        esc_oficiais = [corresponder_escola_oficial(e) for e in escolas_delimitadas if str(e).strip()]
+        rows_q = []
+        for esc in esc_oficiais:
+            media_val = None
+            if not df_base.empty:
+                sub_e = df_base[df_base["Escola"].apply(lambda x: normalizar_texto(esc) in normalizar_texto(x) or normalizar_texto(x) in normalizar_texto(esc))]
+                if not sub_e.empty:
+                    media_val = round(sub_e["Proficiencia_Pct"].mean(), 1)
+            rows_q.append({
+                "Escola": esc,
+                "Indicador_Medio_Pct": media_val,
+                "Farol": classificar_farol_nivel(media_val),
+                "Origem": "Carteira Delimitada (PEC Qualidade)"
+            })
+        df_q = pd.DataFrame(rows_q)
+        df_q = df_q.sort_values(by="Indicador_Medio_Pct", ascending=True, na_position="last").reset_index(drop=True)
+        df_q.insert(0, "Prioridade", [f"{i+1}º" for i in range(len(df_q))])
+        return df_q
+
+    if not df_base.empty:
+        df_esc_nivel = df_base[df_base["Nivel_Granularidade"] == "ESCOLA"]
+        if df_esc_nivel.empty:
+            df_esc_nivel = df_base
+
+        grp = df_esc_nivel.groupby("Escola", as_index=False).agg(
+            Indicador_Medio_Pct=("Proficiencia_Pct", "mean")
+        )
+        grp["Indicador_Medio_Pct"] = grp["Indicador_Medio_Pct"].round(1)
+        grp["Indice_Criticidade_Pct"] = (100.0 - grp["Indicador_Medio_Pct"]).round(1)
+        grp["Farol"] = grp["Indicador_Medio_Pct"].apply(classificar_farol_nivel)
+
+        escolas_presentes_norm = {normalizar_texto(e) for e in grp["Escola"]}
+        faltantes = [
+            {"Escola": esc, "Indicador_Medio_Pct": np.nan, "Indice_Criticidade_Pct": -1.0, "Farol": "Sem Dado no Filtro"}
+            for esc in ESCOLAS_URE_MIRACATU
+            if normalizar_texto(esc) not in escolas_presentes_norm
+        ]
+        if faltantes:
+            grp = pd.concat([grp, pd.DataFrame(faltantes)], ignore_index=True)
+
+        grp = grp.sort_values(by=["Indice_Criticidade_Pct", "Escola"], ascending=[False, True]).head(30).reset_index(drop=True)
+        grp.insert(0, "Prioridade", [f"{i+1}º" for i in range(len(grp))])
+        return grp
+
+    df_fallback = pd.DataFrame({
+        "Prioridade": [f"{i+1}º" for i in range(len(ESCOLAS_URE_MIRACATU[:30]))],
+        "Escola": ESCOLAS_URE_MIRACATU[:30],
+        "Indicador_Medio_Pct": [np.nan] * len(ESCOLAS_URE_MIRACATU[:30]),
+        "Indice_Criticidade_Pct": [np.nan] * len(ESCOLAS_URE_MIRACATU[:30]),
+        "Farol": ["Aguardando dados do filtro"] * len(ESCOLAS_URE_MIRACATU[:30])
+    })
+    return df_fallback
+
+# ==============================================================================
+# CONSTRUTOR DO PLANNER MENSAL VISUAL (ESTILO GOOGLE AGENDA - MÊS INTEIRO)
+# ==============================================================================
+def parsear_data_flexivel(texto_data, ano_padrao=None, mes_padrao=None):
+    if not texto_data or pd.isna(texto_data):
+        return None
+    s = str(texto_data).strip()
+    m1 = re.search(r"(\d{1,2})/(\d{1,2})/(\d{4})", s)
+    if m1:
+        try:
+            return date(int(m1.group(3)), int(m1.group(2)), int(m1.group(1)))
+        except Exception:
+            return None
+    m2 = re.search(r"(\d{4})-(\d{2})-(\d{2})", s)
+    if m2:
+        try:
+            return date(int(m2.group(1)), int(m2.group(2)), int(m2.group(3)))
+        except Exception:
+            return None
+    m3 = re.search(r"(\d{1,2})/(\d{1,2})", s)
+    if m3 and ano_padrao:
+        try:
+            return date(int(ano_padrao), int(m3.group(2)), int(m3.group(1)))
+        except Exception:
+            return None
+    return None
+
+def coletar_eventos_mes_planner(ano, mes, df_bloqueios, df_agenda_seduc, eventos_gcal, cronograma_pec, pasta_pec=""):
+    """
+    Reúne automaticamente para o mês inteiro:
+    - Feriados oficiais SP (vermelho)
+    - Convocações / Bloqueios URE (laranja/amarelo)
+    - Lives e Agenda SEDUC / EEC (roxo/azul)
+    - Compromissos Google Agenda CEC (amarelo/dourado)
+    - Visitas / Ações agendadas pelo PEC no formulário (verde)
+    """
+    eventos_por_dia = {}
+
+    def add_ev(dt, tipo, horario, titulo, detalhe=""):
+        if not dt or dt.year != ano or dt.month != mes:
+            return
+        eventos_por_dia.setdefault(dt.day, []).append({
+            "tipo": tipo,
+            "horario": horario,
+            "titulo": titulo,
+            "detalhe": detalhe
+        })
+
+    # 1. Feriados Oficiais SP
+    feriados_sp = holidays.country_holidays("BR", subdiv="SP", years=[ano])
+    for d_fer, nome_fer in feriados_sp.items():
+        if d_fer.year == ano and d_fer.month == mes:
+            add_ev(d_fer, "FERIADO", "Dia Integral", f"🚩 Feriado: {nome_fer}")
+
+    # 2. Bloqueios / Convocações URE (aba Bloqueios_Agenda)
+    if df_bloqueios is not None and not df_bloqueios.empty:
+        cols_b = {normalizar_texto(c): c for c in df_bloqueios.columns}
+        c_data = next((v for k, v in cols_b.items() if "DATA" in k or "DIA" in k), None)
+        c_hora = next((v for k, v in cols_b.items() if "HORA" in k or "TURNO" in k), None)
+        c_tit = next((v for k, v in cols_b.items() if any(x in k for x in ["EVENTO", "CONVOCACAO", "MOTIVO", "DESCRICAO", "TITULO", "PAUTA"])), None)
+        if c_data:
+            for _, row in df_bloqueios.iterrows():
+                dt_b = parsear_data_flexivel(row[c_data], ano, mes)
+                if dt_b:
+                    h_b = str(row[c_hora]).strip() if c_hora and pd.notna(row[c_hora]) else "Integral / URE"
+                    t_b = str(row[c_tit]).strip() if c_tit and pd.notna(row[c_tit]) else "Convocação / Bloqueio URE"
+                    add_ev(dt_b, "CONVOCACAO", h_b, f"📢 {t_b}")
+
+    # 3. Agenda SEDUC / EEC e Lives (planilha SEDUC)
+    if df_agenda_seduc is not None and not df_agenda_seduc.empty:
+        cols_s = {normalizar_texto(c): c for c in df_agenda_seduc.columns}
+        c_data_s = next((v for k, v in cols_s.items() if "DATA" in k or "DIA" in k), None)
+        c_hora_s = next((v for k, v in cols_s.items() if "HORA" in k or "HORARIO" in k), None)
+        c_tit_s = next((v for k, v in cols_s.items() if any(x in k for x in ["PAUTA", "ASSUNTO", "EVENTO", "LIVE", "ACAO", "DESCRICAO", "TEMA"])), None)
+        c_pub_s = next((v for k, v in cols_s.items() if any(x in k for x in ["PASTA", "PUBLICO", "AREA"])), None)
+        if c_data_s:
+            for _, row in df_agenda_seduc.iterrows():
+                dt_s = parsear_data_flexivel(row[c_data_s], ano, mes)
+                if dt_s:
+                    h_s = str(row[c_hora_s]).strip() if c_hora_s and pd.notna(row[c_hora_s]) else "Horário SEDUC"
+                    t_s = str(row[c_tit_s]).strip() if c_tit_s and pd.notna(row[c_tit_s]) else "Agenda SEDUC / Live"
+                    pub_s = str(row[c_pub_s]).strip() if c_pub_s and pd.notna(row[c_pub_s]) else ""
+                    icone = "📺" if "LIVE" in normalizar_texto(t_s) or "CMSP" in normalizar_texto(t_s) else "🏛️"
+                    add_ev(dt_s, "SEDUC_LIVE", h_s, f"{icone} {t_s}", pub_s)
+
+    # 4. Google Agenda CEC (iCal)
+    for ev in (eventos_gcal or []):
+        if ev.get("ano") == ano and ev.get("mes") == mes:
+            dt_g = date(ano, mes, int(ev["dia"]))
+            add_ev(dt_g, "GCAL", ev.get("horario", ""), f"📅 {ev.get('resumo', 'Compromisso URE')}", ev.get("local", ""))
+
+    # 5. Visitas e Atividades lançadas pelo PEC (atualização imediata no planner!)
+    for idx_item, item in enumerate(cronograma_pec or []):
+        dt_p = parsear_data_flexivel(item.get("data_iso") or item.get("dia", ""), ano, mes)
+        if dt_p:
+            h_p = item.get("horario", "") or item.get("turno", "")
+            loc_p = item.get("local", "Escola")
+            acao_p = item.get("acao", "")
+            atpc_flag = " [ATPC]" if item.get("inclui_atpc") else ""
+            add_ev(dt_p, "VISITA_PEC", h_p, f"🏫 {loc_p}{atpc_flag}", acao_p)
+
+    return eventos_por_dia
+
+def renderizar_html_planner_mensal(ano, mes, eventos_por_dia):
+    """Renderiza uma grade mensal completa (Domingo a Sábado) inspirada no Google Agenda."""
+    cal = calendar.Calendar(firstweekday=6)  # Começa no Domingo (DOM, SEG, TER, QUA, QUI, SEX, SÁB)
+    semanas = cal.monthdayscalendar(ano, mes)
+    nomes_meses = [
+        "", "Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho",
+        "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"
+    ]
+
+    estilos_badge = {
+        "FERIADO": "background:#FFEBEE; color:#B71C1C; border-left:3px solid #D32F2F;",
+        "CONVOCACAO": "background:#FFF3E0; color:#E65100; border-left:3px solid #F57C00;",
+        "SEDUC_LIVE": "background:#EDE7F6; color:#4527A0; border-left:3px solid #5E35B1;",
+        "GCAL": "background:#FFF8E1; color:#F57F17; border-left:3px solid #FBC02D;",
+        "VISITA_PEC": "background:#E8F5E9; color:#1B5E20; border-left:3px solid #2E7D32;"
+    }
+
+    html = f"""
+    <div style="font-family: 'Segoe UI', Arial, sans-serif; border: 1px solid #dadce0; border-radius: 8px; overflow: hidden; background: #fff;">
+        <div style="background: #f8f9fa; padding: 10px 14px; border-bottom: 1px solid #dadce0; display: flex; justify-content: space-between; align-items: center;">
+            <span style="font-size: 16px; font-weight: 600; color: #202124;">🗓️ {nomes_meses[mes]} de {ano}</span>
+            <span style="font-size: 11px; color: #5f6368;">
+                <span style="background:#FFEBEE;color:#B71C1C;padding:2px 5px;border-radius:3px;">🚩 Feriado</span>
+                <span style="background:#FFF3E0;color:#E65100;padding:2px 5px;border-radius:3px;">📢 Convocação</span>
+                <span style="background:#EDE7F6;color:#4527A0;padding:2px 5px;border-radius:3px;">📺 Live/SEDUC</span>
+                <span style="background:#E8F5E9;color:#1B5E20;padding:2px 5px;border-radius:3px;">🏫 Visita PEC</span>
+            </span>
+        </div>
+        <table style="width: 100%; border-collapse: collapse; table-layout: fixed;">
+            <thead>
+                <tr style="background: #f1f3f4; color: #5f6368; font-size: 11px; text-align: center;">
+                    <th style="padding: 6px; border: 1px solid #e0e0e0;">DOM.</th>
+                    <th style="padding: 6px; border: 1px solid #e0e0e0;">SEG.</th>
+                    <th style="padding: 6px; border: 1px solid #e0e0e0;">TER.</th>
+                    <th style="padding: 6px; border: 1px solid #e0e0e0;">QUA.</th>
+                    <th style="padding: 6px; border: 1px solid #e0e0e0;">QUI.</th>
+                    <th style="padding: 6px; border: 1px solid #e0e0e0;">SEX.</th>
+                    <th style="padding: 6px; border: 1px solid #e0e0e0;">SÁB.</th>
+                </tr>
+            </thead>
+            <tbody>
+    """
+
+    hoje = date.today()
+    for sem in semanas:
+        html += "<tr>"
+        for idx_col, dia_num in enumerate(sem):
+            if dia_num == 0:
+                html += '<td style="height: 98px; background: #fafafa; border: 1px solid #e0e0e0;"></td>'
+            else:
+                eh_hoje = (hoje.year == ano and hoje.month == mes and hoje.day == dia_num)
+                bg_cel = "#f1f3f4" if idx_col in [0, 6] else "#ffffff"
+                badge_dia = (
+                    f'<span style="background:#1a73e8;color:#fff;border-radius:50%;padding:1px 6px;font-weight:bold;">{dia_num}</span>'
+                    if eh_hoje else f'<span style="font-weight:600;color:#3c4043;">{dia_num}</span>'
+                )
+                evs = eventos_por_dia.get(dia_num, [])
+                evs_html = ""
+                for ev in evs:
+                    st_b = estilos_badge.get(ev["tipo"], "background:#E3F2FD;color:#0D47A1;")
+                    hora_txt = f"<b>{ev['horario']}</b> — " if ev["horario"] else ""
+                    tit_txt = ev["titulo"]
+                    det_txt = f" ({ev['detalhe']})" if ev.get("detalhe") else ""
+                    evs_html += f'<div style="{st_b} font-size: 10px; line-height: 1.25; padding: 2px 4px; margin-top: 2px; border-radius: 3px; word-wrap: break-word;">{hora_txt}{tit_txt}{det_txt}</div>'
+
+                html += f'<td style="height: 98px; vertical-align: top; padding: 4px; background: {bg_cel}; border: 1px solid #e0e0e0;">{badge_dia}{evs_html}</td>'
+        html += "</tr>"
+
+    html += "</tbody></table></div>"
+    return html
 
 # ==============================================================================
 # ESTILIZAÇÃO VISUAL DO FAROL (CORES POR PROFICIÊNCIA / FREQUÊNCIA / USO)
@@ -490,13 +866,13 @@ def estilo_celula_farol(val):
     try:
         num = float(s)
         if num <= 40.0:
-            return "background-color: #FFCDD2; color: #B71C1C; font-weight: bold;"  # Vermelho
+            return "background-color: #FFCDD2; color: #B71C1C; font-weight: bold;"
         elif num <= 60.0:
-            return "background-color: #FFF9C4; color: #F57F17; font-weight: bold;"  # Amarelo
+            return "background-color: #FFF9C4; color: #F57F17; font-weight: bold;"
         elif num <= 80.0:
-            return "background-color: #C8E6C9; color: #1B5E20; font-weight: bold;"  # Verde
+            return "background-color: #C8E6C9; color: #1B5E20; font-weight: bold;"
         else:
-            return "background-color: #BBDEFB; color: #0D47A1; font-weight: bold;"  # Azul
+            return "background-color: #BBDEFB; color: #0D47A1; font-weight: bold;"
     except Exception:
         if "Vermelho" in s or "Crítico" in s:
             return "background-color: #FFCDD2; color: #B71C1C; font-weight: bold;"
@@ -515,7 +891,6 @@ def renderizar_tabela_hierarquica(df_sub, titulo_secao, rotulo_metrica="Média (
 
     st.caption("🎨 **Legenda do Farol:** 🔴 **0% a 40%** (Crítico) | 🟡 **40,1% a 60%** (Atenção) | 🟢 **60,1% a 80%** (Adequado) | 🔵 **80,1% a 100%** (Avançado)")
 
-    # 1. VISÃO GERAL POR ESCOLA (Sempre consolidada por Escola, nunca misturada por turma)
     st.markdown(f"#### 🏫 Visão Geral por Escola — {titulo_secao}")
     df_esc_base = df_sub[df_sub["Nivel_Granularidade"] == "ESCOLA"]
     if df_esc_base.empty:
@@ -529,14 +904,13 @@ def renderizar_tabela_hierarquica(df_sub, titulo_secao, rotulo_metrica="Média (
     ).round(1)
     piv_esc[rotulo_metrica] = piv_esc.mean(axis=1).round(1)
     cols_ord = [rotulo_metrica] + [c for c in piv_esc.columns if c != rotulo_metrica]
-    piv_esc = piv_esc[cols_ord].reset_index()
+    piv_esc = piv_esc[cols_ord].sort_values(by=rotulo_metrica, ascending=True).reset_index()
 
     cols_num_esc = [c for c in piv_esc.columns if c != "Escola"]
     styler_esc = piv_esc.style.map(estilo_celula_farol, subset=cols_num_esc).format({c: "{:.1f}%" for c in cols_num_esc}, na_rep="-")
     st.dataframe(styler_esc, use_container_width=True, hide_index=True)
 
-    # 2. DRILL-DOWN: ENTRAR NA ESCOLA -> GERAL POR TURMA DA ESCOLA
-    escolas_disp = sorted(df_sub["Escola"].dropna().unique().tolist())
+    escolas_disp = piv_esc["Escola"].dropna().tolist()
     escola_escolhida = st.selectbox(f"🔍 Entrar na Escola (ver Turmas e Estudantes):", ["Selecione uma escola..."] + escolas_disp, key=f"sel_esc_{titulo_secao}")
 
     if escola_escolhida != "Selecione uma escola...":
@@ -553,14 +927,13 @@ def renderizar_tabela_hierarquica(df_sub, titulo_secao, rotulo_metrica="Média (
             ).round(1)
             piv_tur[rotulo_metrica] = piv_tur.mean(axis=1).round(1)
             cols_ord_t = [rotulo_metrica] + [c for c in piv_tur.columns if c != rotulo_metrica]
-            piv_tur = piv_tur[cols_ord_t].reset_index()
+            piv_tur = piv_tur[cols_ord_t].sort_values(by=rotulo_metrica, ascending=True).reset_index()
 
             cols_num_tur = [c for c in piv_tur.columns if c != "Turma"]
             styler_tur = piv_tur.style.map(estilo_celula_farol, subset=cols_num_tur).format({c: "{:.1f}%" for c in cols_num_tur}, na_rep="-")
             st.dataframe(styler_tur, use_container_width=True, hide_index=True)
 
-            # 3. DRILL-DOWN: ENTRAR NA TURMA -> VISÃO ESTUDANTE POR ESTUDANTE (GERAL DA TURMA)
-            turmas_disp = sorted([t for t in df_turma_base["Turma"].dropna().unique().tolist() if "Consolidado" not in t])
+            turmas_disp = [t for t in piv_tur["Turma"].dropna().tolist() if "Consolidado" not in t]
             if turmas_disp:
                 turma_escolhida = st.selectbox(f"🎓 Entrar na Turma (Visão Estudante por Estudante):", ["Selecione uma turma..."] + turmas_disp, key=f"sel_tur_{titulo_secao}_{escola_escolhida}")
                 if turma_escolhida != "Selecione uma turma...":
@@ -575,7 +948,7 @@ def renderizar_tabela_hierarquica(df_sub, titulo_secao, rotulo_metrica="Média (
                         ).round(1)
                         piv_alu[rotulo_metrica] = piv_alu.mean(axis=1).round(1)
                         cols_ord_a = [rotulo_metrica] + [c for c in piv_alu.columns if c != rotulo_metrica]
-                        piv_alu = piv_alu[cols_ord_a].reset_index()
+                        piv_alu = piv_alu[cols_ord_a].sort_values(by=rotulo_metrica, ascending=True).reset_index()
 
                         cols_num_alu = [c for c in piv_alu.columns if c != "Estudante"]
                         styler_alu = piv_alu.style.map(estilo_celula_farol, subset=cols_num_alu).format({c: "{:.1f}%" for c in cols_num_alu}, na_rep="-")
@@ -632,9 +1005,9 @@ def carregar_eventos_gcal(url_ics):
 @st.cache_data(ttl=180)
 def sincronizar_pasta_drive_completo(folder_id, api_key):
     if not api_key or "COLE_AQUI" in api_key:
-        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), 0
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), 0
 
-    dfs_ind, dfs_curs = [], []
+    dfs_ind, dfs_curs, dfs_atpc_drv = [], [], []
     registros_planos, registros_termos = [], []
     qtd_arquivos = 0
 
@@ -716,25 +1089,38 @@ def sincronizar_pasta_drive_completo(folder_id, api_key):
 
                     elif n_low.endswith(".csv"):
                         df_l = pd.read_csv(arq_bytes)
-                        df_p = padronizar_planilha_bruta(df_l, f_name, caminho_pasta)
-                        if not df_p.empty:
-                            (dfs_curs if "multiplica" in n_low or "cursista" in n_low else dfs_ind).append(df_p)
-                            qtd_arquivos += 1
+                        if "atpc" in n_low:
+                            df_a = padronizar_planilha_atpc(df_l)
+                            if not df_a.empty:
+                                dfs_atpc_drv.append(df_a)
+                                qtd_arquivos += 1
+                        else:
+                            df_p = padronizar_planilha_bruta(df_l, f_name, caminho_pasta)
+                            if not df_p.empty:
+                                (dfs_curs if "multiplica" in n_low or "cursista" in n_low else dfs_ind).append(df_p)
+                                qtd_arquivos += 1
                     elif n_low.endswith(".xlsx") or "spreadsheet" in f_mime:
                         df_l = pd.read_excel(arq_bytes)
-                        df_p = padronizar_planilha_bruta(df_l, f_name, caminho_pasta)
-                        if not df_p.empty:
-                            (dfs_curs if "multiplica" in n_low or "cursista" in n_low else dfs_ind).append(df_p)
-                            qtd_arquivos += 1
+                        if "atpc" in n_low:
+                            df_a = padronizar_planilha_atpc(df_l)
+                            if not df_a.empty:
+                                dfs_atpc_drv.append(df_a)
+                                qtd_arquivos += 1
+                        else:
+                            df_p = padronizar_planilha_bruta(df_l, f_name, caminho_pasta)
+                            if not df_p.empty:
+                                (dfs_curs if "multiplica" in n_low or "cursista" in n_low else dfs_ind).append(df_p)
+                                qtd_arquivos += 1
                 except Exception:
                     pass
 
     varrer_pasta(folder_id, "")
     df_ind_final = pd.concat(dfs_ind, ignore_index=True) if dfs_ind else pd.DataFrame()
     df_curs_final = pd.concat(dfs_curs, ignore_index=True) if dfs_curs else pd.DataFrame()
+    df_atpc_final = pd.concat(dfs_atpc_drv, ignore_index=True).drop_duplicates() if dfs_atpc_drv else pd.DataFrame()
     df_planos_final = pd.DataFrame(registros_planos).drop_duplicates() if registros_planos else pd.DataFrame()
     df_termos_final = pd.DataFrame(registros_termos).drop_duplicates() if registros_termos else pd.DataFrame()
-    return df_ind_final, df_curs_final, df_planos_final, df_termos_final, qtd_arquivos
+    return df_ind_final, df_curs_final, df_atpc_final, df_planos_final, df_termos_final, qtd_arquivos
 
 df_usuarios = carregar_aba("Usuarios")
 df_pastas_raw = carregar_aba("Config_Pastas")
@@ -743,6 +1129,20 @@ if df_pastas_raw.empty:
 df_eventos = carregar_aba("Calendario_Eventos")
 df_bloqueios = carregar_aba("Bloqueios_Agenda")
 df_agenda_seduc = carregar_agenda_seduc_eec()
+
+# Abas para ATPC, Atribuição Docente e Recomposição
+df_atpc_sheets_raw = carregar_aba("ATPC_Escolas")
+if df_atpc_sheets_raw.empty:
+    df_atpc_sheets_raw = carregar_aba("Horarios_ATPC")
+df_atpc_sheets = padronizar_planilha_atpc(df_atpc_sheets_raw)
+
+df_atribuicao_docentes = carregar_aba("Atribuicao_Docentes")
+if df_atribuicao_docentes.empty:
+    df_atribuicao_docentes = carregar_aba("Professores_Componentes")
+
+df_recomposicao_sheets = carregar_aba("Recomposicao_Alunos")
+if df_recomposicao_sheets.empty:
+    df_recomposicao_sheets = carregar_aba("Alunos_Recomposicao")
 
 def consolidar_pastas(df_p):
     padrao = pd.DataFrame([
@@ -776,12 +1176,12 @@ TAREFAS_POR_PASTA = {
         "Realizar visita presencial às escolas atribuídas (mínimo 1x a cada duas semanas)",
         "Realizar formação em serviço de CGP e CGPG com base no roteiro SEDUC",
         "Assistir a aulas previamente agendadas e registrar devolutivas formativas",
-        "Analisar indicadores de frequência e metas das unidades escolares junto à Supervisão"
+        "Participar da ATPC da unidade escolar para alinhamento pedagógico"
     ],
     "DESENVOLVIMENTO CURRICULAR": [
         "Articular currículo, materiais digitais/impressos e plataformas (Speak, Open English, Khan Academy, Matific, Leia SP, Redação) com SARESP, Prova Paulista, Diagnóstica, SAEB e ENEM",
         "Priorizar turmas, docentes e estudantes com desempenho crítico dentro da sua pasta de atuação",
-        "Realizar encontros virtuais ou visitas presenciais nas escolas com menor desempenho nas avaliações e plataformas",
+        "Participar da ATPC da escola para orientação de currículo, materiais e plataformas",
         "Cascatear orientações técnicas e formações da SEDUC para CGP/CGPG e docentes"
     ],
     "CONVIVA": [
@@ -799,7 +1199,7 @@ TAREFAS_POR_PASTA = {
     "EDUCACAO ESPECIAL": [
         "Verificar Estudo de Caso (EC), PAEE, PEI e Relatórios Bimestrais nas escolas",
         "Priorizar visitas às unidades com maior demanda de apoio em inclusão e acessibilidade",
-        "Apoiar CGP, CGPG, Professores do AEE e Ensino Colaborativo",
+        "Apoiar CGP, CGPG, Professores do AEE e Ensino Colaborativo (inclusive em ATPC)",
         "Reportar ao CEC relatório circunstanciado das ações formativas e atendimentos"
     ],
     "RECOMPOSICAO": [
@@ -846,21 +1246,22 @@ def gerar_docx_plano(nome_pec, email_pec, pasta_pec, comp_pec, escola_sel, seman
     p_info.add_run(f"{nome_pec} ({email_pec})\n")
     p_info.add_run("Pasta / Área de Atuação: ").bold = True
     p_info.add_run(f"{pasta_pec} — Componente: {comp_pec}\n")
-    p_info.add_run("Unidade Escolar Prioritária: ").bold = True
+    p_info.add_run("Unidade Escolar Prioritária Principal: ").bold = True
     p_info.add_run(f"{escola_sel}\n")
     p_info.add_run("Período / Mês de Referência: ").bold = True
     p_info.add_run(f"{semana_str}\n")
 
-    doc.add_heading("1. Cronograma de Visitas e Ações Planejadas", level=2)
+    doc.add_heading("1. Cronograma Mensal de Visitas, ATPCs e Ações Planejadas", level=2)
     tabela = doc.add_table(rows=1, cols=4)
     tabela.style = "Table Grid"
     hdr = tabela.rows[0].cells
-    hdr[0].text = "Data / Dia / Turno"
+    hdr[0].text = "Data / Dia / Horário"
     hdr[1].text = "Escola / Local"
     hdr[2].text = "Ação Pedagógica (Resolução SEDUC 01/2026)"
-    hdr[3].text = "Público-Alvo / Encaminhamento"
+    hdr[3].text = "Público-Alvo / ATPC / Encaminhamento"
 
-    for item in cronograma_dias:
+    cron_ordenado = sorted(cronograma_dias, key=lambda x: x.get("data_iso", "9999-99-99"))
+    for item in cron_ordenado:
         row_cells = tabela.add_row().cells
         row_cells[0].text = item.get("dia", "")
         row_cells[1].text = item.get("local", "")
@@ -929,6 +1330,7 @@ if "autenticado" not in st.session_state:
     st.session_state["usuario_componente"] = "Todos"
     st.session_state["usuario_escolas"] = []
     st.session_state["cronograma_semana"] = []
+    st.session_state["df_atpc_upload"] = pd.DataFrame()
 
 if not st.session_state["autenticado"]:
     st.title("🧭 GPS — Guia Pedagógico Semanal")
@@ -983,8 +1385,9 @@ if not st.session_state["autenticado"]:
                                         comp_encontrado = str(row_u[col_comp]).strip()
                                     if col_esc:
                                         escolas_encontradas = [
-                                            e.strip() for e in match[col_esc].dropna().astype(str).tolist()
-                                            for e in e.split(",") if e.strip()
+                                            corresponder_escola_oficial(e.strip())
+                                            for e in match[col_esc].dropna().astype(str).tolist()
+                                            for e in re.split(r"[,;/]", e) if e.strip()
                                         ]
 
                     if acesso_ok:
@@ -1004,15 +1407,21 @@ pasta_atual = st.session_state["usuario_pasta"]
 comp_atual = st.session_state["usuario_componente"]
 escolas_usuario = st.session_state["usuario_escolas"]
 eh_cec_ou_at = pasta_atual in ["CEC", "AT"]
+eh_pec_qualidade = pasta_atual == "QUALIDADE DA AULA"
+eh_recomposicao = pasta_atual == "RECOMPOSICAO"
 
-df_ind_global, df_curs_global, df_planos_drive, df_termos_drive, qtd_arqs_drive = (
+df_ind_global, df_curs_global, df_atpc_drive, df_planos_drive, df_termos_drive, qtd_arqs_drive = (
     sincronizar_pasta_drive_completo(ID_PASTA_DRIVE_GPS, GOOGLE_DRIVE_API_KEY)
-    if "COLE_AQUI" not in GOOGLE_DRIVE_API_KEY else (pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), 0)
+    if "COLE_AQUI" not in GOOGLE_DRIVE_API_KEY else (pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), 0)
 )
+
+# Consolida base de ATPC (Sheets + Drive + Upload na sessão)
+dfs_atpc_lista = [d for d in [df_atpc_sheets, df_atpc_drive, st.session_state.get("df_atpc_upload", pd.DataFrame())] if not d.empty]
+df_atpc_global = pd.concat(dfs_atpc_lista, ignore_index=True).drop_duplicates() if dfs_atpc_lista else pd.DataFrame()
 
 df_ind_usuario = (
     df_ind_global if eh_cec_ou_at
-    else filtrar_indicadores_por_pec(df_ind_global, pasta_atual, comp_atual, escolas_usuario)
+    else filtrar_indicadores_por_pec(df_ind_global, pasta_atual, comp_atual, escolas_usuario if eh_pec_qualidade else None)
 )
 
 # ==============================================================================
@@ -1037,10 +1446,10 @@ with st.sidebar:
         st.rerun()
 
 st.title("🧭 GPS — Guia Pedagógico Semanal")
-st.caption("Planejamento, Indicadores Hierárquicos (Escola → Turma → Estudante) e Acompanhamento — URE de Miracatu")
+st.caption("Planejamento Mensal Integrado, Indicadores Hierárquicos e Acompanhamento — URE de Miracatu")
 
 lista_abas = [
-    "📋 Plano de Trabalho & Exportação",
+    "📋 Plano de Trabalho & Planner Mensal",
     "📊 Indicadores (Avaliações, Plataformas & Frequência)",
     "📅 Agenda SEDUC, CEC & Feriados",
     "📚 Diretrizes das Pastas (Res. SEDUC 01/2026)"
@@ -1050,68 +1459,213 @@ if eh_cec_ou_at:
 
 abas = st.tabs(lista_abas)
 
-# --- ABA 1: PLANO DE TRABALHO & EXPORTAÇÃO ---
+# --- ABA 1: PLANO DE TRABALHO & PLANNER MENSAL LADO A LADO ---
 with abas[0]:
     st.subheader("Elaboração do Plano de Trabalho (Modelo Oficial URE Miracatu)")
     st.caption("Submeta o arquivo gerado na pasta do Google Drive até o 2º dia útil do mês. Após cada visita, deposite o Termo de Visita em PDF na sua pasta do Drive.")
 
-    col1, col2 = st.columns(2)
-    with col1:
-        lista_esc_select = escolas_usuario if escolas_usuario else ESCOLAS_URE_MIRACATU
-        escola_prioritaria = st.selectbox("Unidade Escolar Prioritária:", lista_esc_select)
-    with col2:
-        semana_ref = st.text_input("Mês / Semana de Referência:", value=datetime.now().strftime("%m/%Y — Semana de %d/%m/%Y"))
+    # 1. Ranking / Carteira de Escolas Prioritárias conforme perfil
+    with st.expander("🎯 Ranking & Diagnóstico de Unidades Escolares Prioritárias (clique para filtrar indicadores)", expanded=False):
+        if eh_pec_qualidade:
+            c_f1, c_f2 = st.columns(2)
+            with c_f1:
+                ind_filtro_prio = st.selectbox(
+                    "Ordenar suas escolas pelo Indicador:",
+                    ["TODOS", "AVALIACAO", "PLATAFORMA", "FREQUENCIA"],
+                    format_func=lambda x: {"TODOS": "Todos os Indicadores (Média Geral)", "AVALIACAO": "Avaliações", "PLATAFORMA": "Plataformas Digitais", "FREQUENCIA": "Frequência Escolar"}[x],
+                    key="ind_prio_qual"
+                )
+            with c_f2:
+                subcats_disp = ["TODAS"] + (sorted(df_ind_usuario["Subcategoria"].dropna().unique().tolist()) if not df_ind_usuario.empty else [])
+                sub_filtro_prio = st.selectbox("Filtrar Prova / Plataforma:", subcats_disp, key="sub_prio_qual")
+            df_ranking_prio = obter_ranking_escolas_prioritarias(df_ind_usuario, pasta_atual, escolas_usuario, ind_filtro_prio, sub_filtro_prio)
+        elif eh_recomposicao:
+            df_ranking_prio = obter_ranking_escolas_prioritarias(df_ind_usuario, pasta_atual, escolas_usuario, "TODOS", "TODAS", df_recomposicao_sheets)
+        else:
+            c_f1, c_f2 = st.columns(2)
+            with c_f1:
+                ind_filtro_prio = st.selectbox(
+                    "Filtrar Ranking Top 30 por Indicador:",
+                    ["TODOS", "AVALIACAO", "PLATAFORMA", "FREQUENCIA"],
+                    format_func=lambda x: {"TODOS": "Índice Geral de Criticidade (Todos)", "AVALIACAO": "Avaliações (Menor Proficiência)", "PLATAFORMA": "Plataformas Digitais (Menor Engajamento)", "FREQUENCIA": "Frequência Escolar (Menor Frequência)"}[x],
+                    key="ind_prio_pasta"
+                )
+            with c_f2:
+                subcats_disp = ["TODAS"] + (sorted(df_ind_usuario["Subcategoria"].dropna().unique().tolist()) if not df_ind_usuario.empty else [])
+                sub_filtro_prio = st.selectbox("Filtrar Avaliação / Plataforma:", subcats_disp, key="sub_prio_pasta")
+            df_ranking_prio = obter_ranking_escolas_prioritarias(df_ind_usuario, pasta_atual, escolas_usuario, ind_filtro_prio, sub_filtro_prio)
 
-    tarefas_pasta = TAREFAS_POR_PASTA.get(pasta_atual, [])
+        cols_show = [c for c in df_ranking_prio.columns if c != "Indice_Criticidade_Pct"]
+        styler_prio = df_ranking_prio[cols_show].style
+        if "Indicador_Medio_Pct" in cols_show:
+            styler_prio = styler_prio.map(estilo_celula_farol, subset=["Indicador_Medio_Pct"]).format({"Indicador_Medio_Pct": "{:.1f}%"}, na_rep="-")
+        st.dataframe(styler_prio, use_container_width=True, hide_index=True)
 
-    st.markdown("#### Adicionar Visita / Atividade ao Plano")
-    with st.form("form_add_atividade", clear_on_submit=True):
-        c_dia, c_loc = st.columns(2)
-        with c_dia:
-            dia_turno = st.text_input("Data / Dia da Semana / Turno:", value=datetime.now().strftime("%d/%m/%Y (Manhã)"))
-        with c_loc:
-            local_acao = st.selectbox("Local / Escola:", ["Sede URE Miracatu / Trabalho Interno", "Reunião Virtual / EFAPE / SEDUC"] + lista_esc_select)
+    lista_esc_select = df_ranking_prio["Escola"].dropna().tolist() if not df_ranking_prio.empty else (escolas_usuario if escolas_usuario else ESCOLAS_URE_MIRACATU)
 
-        acao_escolhida = st.selectbox("Ação Pedagógica da Pasta:", tarefas_pasta + ["Outra ação específica (descrever abaixo)"])
-        publico_enc = st.text_input("Público-Alvo / Detalhamento da Ação:", placeholder="Ex.: CGP/CGPG, Professores da área, Plataformas (Speak, Khan, Matific)...")
-        add_btn = st.form_submit_button("➕ Inserir no Plano")
+    # 2. Seletor do Mês e Ano do Planejamento + Upload opcional da Planilha de ATPC
+    c_top1, c_top2, c_top3 = st.columns([1, 1, 2])
+    with c_top1:
+        mes_plano = st.selectbox(
+            "Mês do Plano:",
+            list(range(1, 13)),
+            index=datetime.now().month - 1,
+            format_func=lambda m: ["Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho", "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"][m - 1],
+            key="mes_planner_top"
+        )
+    with c_top2:
+        ano_plano = st.number_input("Ano do Plano:", min_value=2025, max_value=2030, value=datetime.now().year, key="ano_planner_top")
+    with c_top3:
+        arq_atpc = st.file_uploader("📂 Subir Planilha de Dias/Horários de ATPC das Escolas (.xlsx / .csv):", type=["xlsx", "csv"], key="up_atpc_planner")
+        if arq_atpc is not None:
+            df_a_raw = pd.read_csv(arq_atpc) if arq_atpc.name.endswith(".csv") else pd.read_excel(arq_atpc)
+            df_a_pad = padronizar_planilha_atpc(df_a_raw)
+            if not df_a_pad.empty:
+                st.session_state["df_atpc_upload"] = df_a_pad
+                df_atpc_global = pd.concat([df_atpc_global, df_a_pad], ignore_index=True).drop_duplicates()
+                st.success(f"✅ {len(df_a_pad)} horário(s) de ATPC carregado(s)!")
+            else:
+                st.warning("Verifique se a planilha possui colunas de 'Escola', 'Dia da Semana' e 'Horário'.")
 
-        if add_btn:
-            st.session_state["cronograma_semana"].append({
-                "dia": dia_turno,
-                "local": local_acao,
-                "acao": acao_escolhida,
-                "publico": publico_enc if publico_enc.strip() else "Equipe Gestora / Docentes"
-            })
-            st.success("Atividade adicionada ao Plano de Trabalho!")
+    st.markdown("---")
 
-    if st.session_state["cronograma_semana"]:
-        df_cron = pd.DataFrame(st.session_state["cronograma_semana"])
-        st.dataframe(df_cron, use_container_width=True)
-        if st.button("🗑️ Limpar Atividades"):
-            st.session_state["cronograma_semana"] = []
-            st.rerun()
-    else:
-        st.info("Nenhuma atividade inserida ainda. Use o formulário acima para montar seu cronograma.")
+    # ==========================================================================
+    # TELA DIVIDIDA EM DOIS: ESQUERDA = PLANNER MENSAL | DIREITA = LANÇAMENTO
+    # ==========================================================================
+    col_planner, col_lancamento = st.columns([1.35, 1.0], gap="large")
 
-    obs_texto = st.text_area("Pautas Formativas, Diagnóstico de Indicadores e Encaminhamentos:", height=110)
+    # --- LADO DIREITO: LANÇAMENTO DE VISITAS / ATPC E SUGESTÃO AUTOMÁTICA ---
+    with col_lancamento:
+        st.markdown("### ✍️ Lançar Visita / Ação no Plano")
+
+        escola_sel_form = st.selectbox(
+            "1. Escolha a Escola Prioritária ou Local:",
+            lista_esc_select + ["Sede URE Miracatu / Trabalho Interno", "Reunião Virtual / EFAPE / SEDUC"],
+            key="esc_lancamento_live"
+        )
+
+        # Exibe os dias e horários de ATPC da escola selecionada e sugere datas no mês!
+        atpcs_da_escola = obter_atpcs_escola(df_atpc_global, escola_sel_form, comp_atual)
+        sugestoes_atpc = []
+        if not atpcs_da_escola.empty:
+            resumo_atpc = " | ".join([f"**{r['Dia_Semana_Str']}** ({r['Horario']} — {r['Area_Componente']})" for _, r in atpcs_da_escola.iterrows()])
+            st.info(f"🕒 **ATPC desta Escola:** {resumo_atpc}")
+            sugestoes_atpc = sugerir_datas_atpc_no_mes(ano_plano, mes_plano, atpcs_da_escola)
+        elif escola_sel_form in ESCOLAS_URE_MIRACATU:
+            st.caption("ℹ️ Nenhum horário de ATPC cadastrado para esta escola ainda (suba a planilha de ATPC acima ou cadastre a aba `ATPC_Escolas` no Sheets).")
+
+        # Se houver sugestões de datas de ATPC no mês, permite escolher com 1 clique
+        data_sugerida_dt = None
+        horario_sugerido_str = "08:00 às 12:00"
+        incluir_atpc_auto = False
+
+        if sugestoes_atpc:
+            opcoes_sug = ["Escolher data manualmente no calendário abaixo..."] + [
+                f"✨ Sugestão ATPC: {s['data_str']} ({s['dia_semana']}) — {s['horario']} [{s['area']}]"
+                for s in sugestoes_atpc
+            ]
+            escolha_sug = st.selectbox("💡 Sugestão Automática de Data (Dia de ATPC na Escola):", opcoes_sug, key="sug_atpc_sel")
+            if escolha_sug != "Escolher data manualmente no calendário abaixo...":
+                idx_s = opcoes_sug.index(escolha_sug) - 1
+                data_sugerida_dt = sugestoes_atpc[idx_s]["data"]
+                horario_sugerido_str = sugestoes_atpc[idx_s]["horario"]
+                incluir_atpc_auto = True
+
+        # Calcula data padrão dentro do mês/ano selecionado
+        _, max_dia_mes = calendar.monthrange(ano_plano, mes_plano)
+        dia_default = min(datetime.now().day, max_dia_mes)
+        data_default = data_sugerida_dt if data_sugerida_dt else date(ano_plano, mes_plano, dia_default)
+
+        with st.form("form_add_atividade_split", clear_on_submit=False):
+            c_d1, c_d2 = st.columns(2)
+            with c_d1:
+                data_visita = st.date_input(
+                    "2. Data da Visita / Ação:",
+                    value=data_default,
+                    min_value=date(ano_plano, mes_plano, 1),
+                    max_value=date(ano_plano, mes_plano, max_dia_mes),
+                    format="DD/MM/YYYY"
+                )
+            with c_d2:
+                horario_visita = st.text_input("3. Horário / Turno:", value=horario_sugerido_str)
+
+            tarefas_pasta = TAREFAS_POR_PASTA.get(pasta_atual, [])
+            acao_escolhida = st.selectbox("4. Ação Pedagógica da Pasta:", tarefas_pasta + ["Participação em ATPC da Unidade Escolar", "Outra ação específica"])
+            publico_enc = st.text_input(
+                "5. Público-Alvo / Detalhamento / ATPC:",
+                value=("Participação na ATPC da escola + Acompanhamento Pedagógico" if incluir_atpc_auto else ""),
+                placeholder="Ex.: CGP/CGPG, Professores da área, ATPC..."
+            )
+            participa_atpc_chk = st.checkbox("Marcar como participação em ATPC no Planner", value=incluir_atpc_auto)
+
+            add_btn = st.form_submit_button("➕ Adicionar ao Planner ao Lado", use_container_width=True)
+
+            if add_btn:
+                dia_sem_nome = DIAS_SEMANA_LABEL[data_visita.weekday()]
+                st.session_state["cronograma_semana"].append({
+                    "data_iso": data_visita.isoformat(),
+                    "dia": f"{data_visita.strftime('%d/%m/%Y')} ({dia_sem_nome}) — {horario_visita}",
+                    "horario": horario_visita,
+                    "local": escola_sel_form,
+                    "acao": acao_escolhida,
+                    "publico": publico_enc if publico_enc.strip() else "Equipe Gestora / Docentes",
+                    "inclui_atpc": participa_atpc_chk
+                })
+                st.rerun()
+
+        # Lista compacta das visitas lançadas com botão individual de remoção
+        if st.session_state["cronograma_semana"]:
+            st.markdown("#### 📌 Visitas / Ações Agendadas no Mês")
+            for idx_it, it in enumerate(st.session_state["cronograma_semana"]):
+                c_it1, c_it2 = st.columns([5, 1])
+                with c_it1:
+                    st.markdown(f"**{it['dia']}** — `{it['local']}`<br><small>{it['acao']} | {it['publico']}</small>", unsafe_allow_html=True)
+                with c_it2:
+                    if st.button("🗑️", key=f"del_item_{idx_it}", help="Remover agendamento"):
+                        st.session_state["cronograma_semana"].pop(idx_it)
+                        st.rerun()
+            if st.button("🧹 Limpar Todos os Agendamentos", use_container_width=True):
+                st.session_state["cronograma_semana"] = []
+                st.rerun()
+
+    # --- LADO ESQUERDO: PLANNER MENSAL COMPLETO ATUALIZADO EM TEMPO REAL ---
+    with col_planner:
+        st.markdown("### 🗓️ Planner Mensal Integrado (Tempo Real)")
+        eventos_gcal = carregar_eventos_gcal(URL_GOOGLE_AGENDA_CEC)
+        eventos_mes = coletar_eventos_mes_planner(
+            ano_plano,
+            mes_plano,
+            df_bloqueios,
+            df_agenda_seduc,
+            eventos_gcal,
+            st.session_state["cronograma_semana"],
+            pasta_atual
+        )
+        html_cal = renderizar_html_planner_mensal(ano_plano, mes_plano, eventos_mes)
+        st.markdown(html_cal, unsafe_allow_html=True)
+
+    st.markdown("---")
+    obs_texto = st.text_area("Pautas Formativas, Diagnóstico de Indicadores e Encaminhamentos:", height=100)
 
     df_prio_word = pd.DataFrame()
     if not df_ind_usuario.empty:
         df_prio_word = df_ind_usuario[df_ind_usuario["Proficiencia_Pct"] <= 60.0]
+
+    mes_ref_str = f"{mes_plano:02d}/{ano_plano}"
+    escola_principal_doc = st.session_state["cronograma_semana"][0]["local"] if st.session_state["cronograma_semana"] else escola_sel_form
 
     docx_buf = gerar_docx_plano(
         st.session_state["usuario_nome"],
         st.session_state["usuario_email"],
         pasta_atual,
         comp_atual,
-        escola_prioritaria,
-        semana_ref,
+        escola_principal_doc,
+        mes_ref_str,
         st.session_state["cronograma_semana"],
         obs_texto,
         df_prio_word
     )
-    nome_arq_docx = f"Plano_Trabalho_URE_{st.session_state['usuario_nome'].replace(' ', '_')}_{datetime.now().strftime('%Y%m')}.docx"
+    nome_arq_docx = f"Plano_Trabalho_URE_{st.session_state['usuario_nome'].replace(' ', '_')}_{ano_plano}{mes_plano:02d}.docx"
 
     col_dl, col_em, col_drv_link = st.columns(3)
     with col_dl:
@@ -1127,7 +1681,7 @@ with abas[0]:
             ok, msg_envio = enviar_email_gps(
                 [EMAIL_CEC, EMAIL_DIRIGENTE],
                 f"[GPS URE Miracatu] Plano de Trabalho — {st.session_state['usuario_nome']} ({pasta_atual})",
-                f"Segue em anexo o Plano de Trabalho de {st.session_state['usuario_nome']} ({pasta_atual} - {comp_atual}).",
+                f"Segue em anexo o Plano de Trabalho de {st.session_state['usuario_nome']} ({pasta_atual} - {comp_atual}) referente a {mes_ref_str}.",
                 docx_buf,
                 nome_arq_docx
             )
@@ -1183,7 +1737,6 @@ with abas[1]:
         "🏫 Frequência Escolar"
     ])
 
-    # 1. SUB-ABA AVALIAÇÕES
     with sub_aval:
         df_av = df_ind_usuario[df_ind_usuario["Tipo_Indicador"] == "AVALIACAO"] if not df_ind_usuario.empty else pd.DataFrame()
         c_av1, c_av2 = st.columns(2)
@@ -1210,7 +1763,6 @@ with abas[1]:
 
         renderizar_tabela_hierarquica(df_av_filt, f"{tipo_prova} ({periodo_filtro})", "Proficiência Média (%)")
 
-    # 2. SUB-ABA PLATAFORMAS
     with sub_plat:
         df_pl = df_ind_usuario[df_ind_usuario["Tipo_Indicador"] == "PLATAFORMA"] if not df_ind_usuario.empty else pd.DataFrame()
         plats_lista = ["Todas as Plataformas", "Khan Academy", "Matific", "Speak", "Open English", "Leia SP", "Redação Paulista", "Alura"]
@@ -1222,7 +1774,6 @@ with abas[1]:
 
         renderizar_tabela_hierarquica(df_pl_filt, f"Plataforma — {plat_escolhida}", "Engajamento / Uso (%)")
 
-    # 3. SUB-ABA FREQUÊNCIA
     with sub_freq:
         df_fr = df_ind_usuario[df_ind_usuario["Tipo_Indicador"] == "FREQUENCIA"] if not df_ind_usuario.empty else pd.DataFrame()
         periodos_fr = sorted(df_fr["Periodo"].dropna().unique().tolist()) if not df_fr.empty else []
