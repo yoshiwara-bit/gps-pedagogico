@@ -16,6 +16,9 @@ import unicodedata
 import os
 import re
 import json
+import hashlib
+import hmac
+import secrets
 import holidays
 from icalendar import Calendar as ICalCalendar
 
@@ -1490,6 +1493,7 @@ def sincronizar_pasta_drive_completo(folder_id, api_key):
     return df_ind_final, df_curs_final, df_atpc_final, df_planos_final, df_termos_final, qtd_arquivos
 
 df_usuarios = carregar_aba("Usuarios")
+df_senha_hash = carregar_aba("Senha_Hash")
 df_pastas_raw = carregar_aba("Config_Pastas")
 if df_pastas_raw.empty:
     df_pastas_raw = carregar_aba("Confing_Pastas")
@@ -1830,91 +1834,86 @@ if "autenticado" not in st.session_state:
     st.session_state["usuario_escolas"] = []
     st.session_state["cronograma_semana"] = []
 
+def verificar_hash_senha(senha, registro):
+    """Valida PBKDF2-SHA256 no formato pbkdf2_sha256$iteracoes$salt_hex$hash_hex."""
+    try:
+        metodo, iteracoes, salt_hex, digest_hex = str(registro).strip().split("$")
+        if metodo != "pbkdf2_sha256":
+            return False
+        rounds = int(iteracoes)
+        if rounds < 600000 or rounds > 2000000:
+            return False
+        salt = bytes.fromhex(salt_hex)
+        digest = bytes.fromhex(digest_hex)
+        if len(salt) < 16 or len(digest) != 32:
+            return False
+        esperado = hashlib.pbkdf2_hmac("sha256", senha.encode("utf-8"), salt, rounds)
+        return hmac.compare_digest(esperado, digest)
+    except (ValueError, TypeError, OverflowError):
+        return False
+
+
+def localizar_coluna(df, *nomes):
+    cols = {normalizar_texto(c).replace("-", "_"): c for c in df.columns}
+    return next((cols[n] for n in nomes if n in cols), None)
+
+
 if not st.session_state["autenticado"]:
     st.title("🧭 GPS — Guia Pedagógico Semanal")
     st.subheader("Unidade Regional de Ensino de Miracatu — SEDUC-SP")
     st.markdown("---")
-
     col_esq, col_centro, col_dir = st.columns([1, 2, 1])
     with col_centro:
         with st.form("form_login_gps"):
             st.markdown("### Acesso da Equipe de Especialistas (EEC / CEC / AT)")
-            email_in = st.text_input("E-mail Institucional (@educacao.sp.gov.br ou @prof.educacao.sp.gov.br)")
-            senha_in = st.text_input("Senha / Código de Acesso", type="password")
-            pasta_fallback = st.selectbox(
-                "Pasta / Função (usado se não estiver cadastrado na aba Usuarios):",
-                list(TAREFAS_POR_PASTA.keys())
-            )
+            email_in = st.text_input("E-mail institucional").strip().lower()
+            senha_in = st.text_input("Senha", type="password")
             entrar = st.form_submit_button("Entrar no Sistema GPS", use_container_width=True)
 
-            if entrar:
-                if not email_in.strip():
-                    st.error("Por favor, informe seu e-mail institucional.")
+        if entrar:
+            if not email_in or not senha_in:
+                st.error("Informe e-mail e senha.")
+            elif df_usuarios.empty or df_senha_hash.empty:
+                st.error("Autenticação indisponível. Contate a coordenação.")
+            else:
+                col_email = localizar_coluna(df_usuarios, "EMAIL", "E_MAIL")
+                col_hash_email = localizar_coluna(df_senha_hash, "EMAIL", "E_MAIL")
+                col_hash = localizar_coluna(df_senha_hash, "SENHA_HASH")
+                if not all([col_email, col_hash_email, col_hash]):
+                    st.error("Cadastro de autenticação incompleto. Contate a coordenação.")
                 else:
-                    nome_encontrado = email_in.split("@")[0].replace(".", " ").title()
-                    pasta_encontrada = pasta_fallback
-                    comp_encontrado = "Todos"
-                    escolas_encontradas = []
-                    acesso_ok = True
-
-                    if not df_usuarios.empty:
-                        cols_u = {normalizar_texto(c): c for c in df_usuarios.columns}
-                        col_email = next((v for k, v in cols_u.items() if "EMAIL" in k or "E-MAIL" in k), None)
-                        col_nome = next((v for k, v in cols_u.items() if "NOME" in k), None)
-                        col_pasta = next((v for k, v in cols_u.items() if "PASTA" in k or "FUNCAO" in k), None)
-                        col_comp = next((v for k, v in cols_u.items() if "COMPONENTE" in k or "AREA" in k), None)
-                        col_esc = next((v for k, v in cols_u.items() if "ESCOLA" in k), None)
-                        col_senha = next((v for k, v in cols_u.items() if "SENHA" in k or "PIN" in k), None)
-
-                        cols_esc_todas = [v for k, v in cols_u.items() if any(x in k for x in ["ESCOLA", "UNIDADE", "CARTEIRA", "UE"])]
-                        col_subpasta = next((v for k, v in cols_u.items() if any(x in k for x in ["SUBPASTA", "SEGMENTO", "ESPECIFICA"])), None)
-                        if col_email:
-                            match = df_usuarios[df_usuarios[col_email].astype(str).str.strip().str.lower() == email_in.strip().lower()]
-                            if not match.empty:
-                                row_u = match.iloc[0]
-                                if col_senha and pd.notna(row_u[col_senha]) and str(row_u[col_senha]).strip() != "":
-                                    if senha_in.strip() != str(row_u[col_senha]).strip():
-                                        acesso_ok = False
-                                        st.error("Senha incorreta para este usuário.")
-                                if acesso_ok:
-                                    if col_nome and pd.notna(row_u[col_nome]):
-                                        nome_encontrado = str(row_u[col_nome]).strip()
-                                    pasta_bruta_u = str(row_u[col_pasta]).strip() if col_pasta and pd.notna(row_u[col_pasta]) else ""
-                                    if pasta_bruta_u:
-                                        pasta_encontrada = mapear_pasta_chave(pasta_bruta_u) or pasta_fallback
-                                    partes_comp_u = []
-                                    if col_comp:
-                                        for val_c in match[col_comp].dropna().astype(str).tolist():
-                                            if val_c.strip() and val_c.strip().lower() not in ["nan", "none"]:
-                                                partes_comp_u.append(val_c.strip())
-                                    if col_subpasta:
-                                        for val_sp in match[col_subpasta].dropna().astype(str).tolist():
-                                            if val_sp.strip() and val_sp.strip().lower() not in ["nan", "none"]:
-                                                partes_comp_u.append(val_sp.strip())
-                                    # Se a própria coluna Pasta trouxer subpasta (ex: "Desenvolvimento Curricular - Matemática")
-                                    if "-" in pasta_bruta_u and "DESENVOLVIMENTO" in normalizar_texto(pasta_bruta_u):
-                                        sub_p_txt = pasta_bruta_u.split("-", 1)[1].strip()
-                                        if sub_p_txt:
-                                            partes_comp_u.append(sub_p_txt)
-                                    if partes_comp_u:
-                                        comp_encontrado = ", ".join(list(dict.fromkeys(partes_comp_u)))
-
-                                    lista_esc_raw = []
-                                    for c_e_item in cols_esc_todas:
-                                        for cel_e in match[c_e_item].dropna().astype(str).tolist():
-                                            for pedaco in re.split(r"[,;/\n]", cel_e):
-                                                if pedaco.strip() and pedaco.strip().lower() not in ["nan", "none", "-"]:
-                                                    lista_esc_raw.append(corresponder_escola_oficial(pedaco.strip()))
-                                    escolas_encontradas = list(dict.fromkeys(lista_esc_raw))
-
-                    if acesso_ok:
-                        st.session_state["autenticado"] = True
-                        st.session_state["usuario_nome"] = nome_encontrado
-                        st.session_state["usuario_email"] = email_in.strip()
-                        st.session_state["usuario_pasta"] = pasta_encontrada if pasta_encontrada in TAREFAS_POR_PASTA else pasta_fallback
-                        st.session_state["usuario_componente"] = comp_encontrado
-                        st.session_state["usuario_escolas"] = escolas_encontradas
-                        st.rerun()
+                    usuarios = df_usuarios[df_usuarios[col_email].fillna("").str.strip().str.lower() == email_in]
+                    hashes = df_senha_hash[df_senha_hash[col_hash_email].fillna("").str.strip().str.lower() == email_in]
+                    if len(usuarios) != 1 or len(hashes) != 1 or not verificar_hash_senha(senha_in, hashes.iloc[0][col_hash]):
+                        st.error("E-mail ou senha inválidos.")
+                    else:
+                        row_u = usuarios.iloc[0]
+                        col_nome = localizar_coluna(df_usuarios, "NOME")
+                        col_pasta = localizar_coluna(df_usuarios, "PASTA", "FUNCAO")
+                        col_comp = localizar_coluna(df_usuarios, "COMPONENTE", "AREA")
+                        col_subpasta = localizar_coluna(df_usuarios, "SUBPASTA", "SEGMENTO")
+                        cols_esc = [c for c in df_usuarios.columns if any(x in normalizar_texto(c) for x in ["ESCOLA", "CARTEIRA", "UNIDADE"])]
+                        pasta = mapear_pasta_chave(row_u[col_pasta]) if col_pasta and pd.notna(row_u[col_pasta]) else ""
+                        if pasta not in TAREFAS_POR_PASTA:
+                            st.error("Função não autorizada ou não configurada. Contate a coordenação.")
+                        else:
+                            comps = []
+                            for c in [col_comp, col_subpasta]:
+                                if c and pd.notna(row_u[c]) and str(row_u[c]).strip():
+                                    comps.append(str(row_u[c]).strip())
+                            escolas = []
+                            for c in cols_esc:
+                                if pd.notna(row_u[c]):
+                                    for parte in re.split(r"[,;/\n]", str(row_u[c])):
+                                        if parte.strip():
+                                            escolas.append(corresponder_escola_oficial(parte.strip()))
+                            st.session_state["autenticado"] = True
+                            st.session_state["usuario_nome"] = str(row_u[col_nome]).strip() if col_nome and pd.notna(row_u[col_nome]) else email_in.split("@")[0]
+                            st.session_state["usuario_email"] = email_in
+                            st.session_state["usuario_pasta"] = pasta
+                            st.session_state["usuario_componente"] = ", ".join(dict.fromkeys(comps)) if comps else ""
+                            st.session_state["usuario_escolas"] = list(dict.fromkeys(escolas))
+                            st.rerun()
     st.stop()
 
 # ==============================================================================
