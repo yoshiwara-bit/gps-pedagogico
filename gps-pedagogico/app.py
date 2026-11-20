@@ -1833,14 +1833,16 @@ if "autenticado" not in st.session_state:
     st.session_state["cronograma_semana"] = []
 
 # Acesso temporário exclusivo para desenvolvimento; remover após configurar OAuth.
-EMAIL_UNICO_GPS = "marcos.yoshiwara@educacao.sp.gov.br"
+# Credenciais ficam somente em Streamlit Secrets, nunca em planilhas públicas.
+EMAIL_UNICO_GPS = str(st.secrets.get("GPS_ADMIN_EMAIL", "")).strip().lower()
+HASH_UNICO_GPS = str(st.secrets.get("GPS_ADMIN_PASSWORD_HASH", "")).strip()
 
 
 def validar_hash_gps(senha, registro):
-    """Formato: pbkdf2_sha256$600000$salt_hex$hash_hex."""
+    """Valida PBKDF2-SHA256 com comparação em tempo constante."""
     try:
         algoritmo, iteracoes, salt_hex, hash_hex = str(registro).strip().split("$")
-        if algoritmo != "pbkdf2_sha256" or int(iteracoes) < 600000:
+        if algoritmo != "pbkdf2_sha256" or not 600000 <= int(iteracoes) <= 2000000:
             return False
         calculado = hashlib.pbkdf2_hmac(
             "sha256", senha.encode("utf-8"), bytes.fromhex(salt_hex), int(iteracoes)
@@ -1864,63 +1866,20 @@ if not st.session_state["autenticado"]:
 
         if entrar:
             email_normalizado = email_in.strip().lower()
-            # Bloqueia outros usuários ANTES de qualquer consulta ou atribuição de perfil.
-            if email_normalizado != EMAIL_UNICO_GPS or not senha_in:
+            if not EMAIL_UNICO_GPS or not HASH_UNICO_GPS:
+                st.error("Autenticação não configurada. Verifique os Secrets do aplicativo.")
+            elif (email_normalizado != EMAIL_UNICO_GPS or not senha_in
+                  or not validar_hash_gps(senha_in, HASH_UNICO_GPS)):
                 st.error("Acesso não autorizado ou credenciais inválidas.")
-            elif df_usuarios.empty:
-                st.error("Cadastro de usuários indisponível. Acesso bloqueado.")
             else:
-                cols_u = {normalizar_texto(c): c for c in df_usuarios.columns}
-                col_email = next((v for k, v in cols_u.items() if "EMAIL" in k or "E-MAIL" in k), None)
-                col_nome = next((v for k, v in cols_u.items() if "NOME" in k), None)
-                col_pasta = next((v for k, v in cols_u.items() if "PASTA" in k or "FUNCAO" in k), None)
-                col_comp = next((v for k, v in cols_u.items() if "COMPONENTE" in k or "AREA" in k), None)
-                col_subpasta = next((v for k, v in cols_u.items() if any(x in k for x in ["SUBPASTA", "SEGMENTO", "ESPECIFICA"])), None)
-                cols_esc_todas = [v for k, v in cols_u.items() if any(x in k for x in ["ESCOLA", "UNIDADE", "CARTEIRA", "UE"])]
-                match = (df_usuarios[df_usuarios[col_email].astype(str).str.strip().str.lower() == email_normalizado]
-                         if col_email else pd.DataFrame())
-                df_hash = carregar_aba("Senha_Hash")
-                if df_hash.empty or match.empty:
-                    st.error("Cadastro ou autenticação indisponível. Acesso bloqueado.")
-                else:
-                    cols_h = {normalizar_texto(c): c for c in df_hash.columns}
-                    col_he = next((v for k, v in cols_h.items() if "EMAIL" in k or "E-MAIL" in k), None)
-                    col_hh = next((v for k, v in cols_h.items() if "SENHA_HASH" in k), None)
-                    hashes = (df_hash[df_hash[col_he].astype(str).str.strip().str.lower() == email_normalizado]
-                              if col_he and col_hh else pd.DataFrame())
-                    hash_valido = (not hashes.empty and pd.notna(hashes.iloc[0][col_hh])
-                                   and validar_hash_gps(senha_in, hashes.iloc[0][col_hh]))
-                    if not hash_valido:
-                        st.error("Acesso não autorizado ou credenciais inválidas.")
-                    else:
-                        row_u = match.iloc[0]
-                        nome = str(row_u[col_nome]).strip() if col_nome and pd.notna(row_u[col_nome]) else "Coordenação"
-                        pasta_bruta = str(row_u[col_pasta]).strip() if col_pasta and pd.notna(row_u[col_pasta]) else "CEC"
-                        pasta = mapear_pasta_chave(pasta_bruta)
-                        # Não permite fallback de função selecionada pelo usuário.
-                        if pasta not in TAREFAS_POR_PASTA:
-                            st.error("Função não reconhecida no cadastro. Acesso bloqueado.")
-                        else:
-                            partes_comp = []
-                            for coluna in [col_comp, col_subpasta]:
-                                if coluna:
-                                    partes_comp += [v.strip() for v in match[coluna].dropna().astype(str).tolist()
-                                                    if v.strip() and v.strip().lower() not in ("nan", "none")]
-                            if "-" in pasta_bruta and "DESENVOLVIMENTO" in normalizar_texto(pasta_bruta):
-                                partes_comp.append(pasta_bruta.split("-", 1)[1].strip())
-                            lista_escolas = []
-                            for coluna in cols_esc_todas:
-                                for celula in match[coluna].dropna().astype(str):
-                                    for trecho in re.split(r"[,;/\n]", celula):
-                                        if trecho.strip() and trecho.strip().lower() not in ("nan", "none", "-"):
-                                            lista_escolas.append(corresponder_escola_oficial(trecho.strip()))
-                            st.session_state["autenticado"] = True
-                            st.session_state["usuario_nome"] = nome
-                            st.session_state["usuario_email"] = email_normalizado
-                            st.session_state["usuario_pasta"] = pasta
-                            st.session_state["usuario_componente"] = ", ".join(dict.fromkeys(partes_comp)) or "Todos"
-                            st.session_state["usuario_escolas"] = list(dict.fromkeys(lista_escolas))
-                            st.rerun()
+                # Perfil fixo de coordenação: não depende da aba Usuarios.
+                st.session_state["autenticado"] = True
+                st.session_state["usuario_nome"] = "Coordenação"
+                st.session_state["usuario_email"] = EMAIL_UNICO_GPS
+                st.session_state["usuario_pasta"] = "CEC"
+                st.session_state["usuario_componente"] = "Todos"
+                st.session_state["usuario_escolas"] = []
+                st.rerun()
     st.stop()
 
 # ==============================================================================
