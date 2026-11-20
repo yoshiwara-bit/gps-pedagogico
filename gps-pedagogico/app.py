@@ -21,6 +21,9 @@ import hmac
 import secrets
 import holidays
 from icalendar import Calendar as ICalCalendar
+import folium
+from streamlit_folium import st_folium
+from html import escape as html_escape
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(page_title="GPS — Guia Pedagógico Semanal", page_icon="🧭", layout="wide")
@@ -1822,6 +1825,240 @@ def enviar_email_gps(destinatarios, assunto, corpo_texto, anexo_bytes, nome_anex
     except Exception as e:
         return False, f"Falha no envio do e-mail: {e}"
 
+
+# ==============================================================================
+# GPS V3 — MAPA TERRITORIAL (MÓDULO DE TESTES)
+# Fontes: fichas gerenciais SEDUC em PDF e malha municipal IBGE em GeoJSON.
+# Nenhuma coordenada, indicador ou distância é inventada.
+# ==============================================================================
+MUNICIPIOS_GPS = {
+    "MIRACATU": ("Miracatu", "#12695D", "#D8EEE9"),
+    "JUQUIA": ("Juquiá", "#AD650C", "#F9E8C7"),
+    "IGUAPE": ("Iguape", "#2059B4", "#DCE9FA"),
+    "ILHA COMPRIDA": ("Ilha Comprida", "#7840A6", "#EADCF6"),
+    "PEDRO DE TOLEDO": ("Pedro de Toledo", "#A83250", "#F7DDE3"),
+    "ITARIRI": ("Itariri", "#4E7D22", "#E5F0D8"),
+}
+
+
+def gps_pdf_campo(texto, campo):
+    m = re.search(r"(?im)^\s*" + re.escape(campo) + r"\s*:\s*(.*?)\s*$", texto)
+    return m.group(1).strip() if m else ""
+
+
+def gps_extrair_ficha_pdf(arquivo):
+    """Extrai apenas campos comprováveis da ficha; descarta PDF não reconhecido."""
+    try:
+        leitor = PdfReader(BytesIO(arquivo.getvalue()))
+        texto = "\n".join(p.extract_text() or "" for p in leitor.pages)
+        if "FICHA GERENCIAL DA ESCOLA" not in normalizar_texto(texto):
+            return None, "Não é uma Ficha Gerencial da Escola."
+        cod = gps_pdf_campo(texto, "Código da Escola")
+        nome = gps_pdf_campo(texto, "Escola")
+        municipio = normalizar_texto(gps_pdf_campo(texto, "Município"))
+        lat = gps_pdf_campo(texto, "Latitude")
+        lon = gps_pdf_campo(texto, "Longitude")
+        if not cod.isdigit() or not nome or municipio not in MUNICIPIOS_GPS:
+            return None, "Código, nome ou município inválido/fora da URE."
+        try:
+            lat, lon = float(lat.replace(",", ".")), float(lon.replace(",", "."))
+            if not (-25.5 < lat < -23 or -49 < lon < -46):
+                return None, "Coordenadas fora da faixa geográfica esperada; validar na SEDUC."
+        except (ValueError, TypeError):
+            return None, "Latitude/longitude ausentes ou inválidas."
+        gestor = gps_pdf_campo(texto, "Diretor Escolar/Diretor de Escola")
+        coordenador = gps_pdf_campo(texto, "PC / Coordenador de Gestão Pedagógica")
+        # A ficha pode trazer campos de gestão como tabelas, sem dois-pontos.
+        for linha in texto.splitlines():
+            norm = normalizar_texto(linha)
+            if "DIRETOR ESCOLAR/DIRETOR DE ESCOLA" in norm and not gestor:
+                gestor = re.split(r"Diretor Escolar/Diretor de Escola", linha, flags=re.I)[-1].strip()
+            if "PC / COORDENADOR DE GESTAO PEDAGOGICA" in norm and not coordenador:
+                coordenador = re.split(r"PC / Coordenador de Gestão Pedagógica", linha, flags=re.I)[-1].strip()
+        vice = gps_pdf_campo(texto, "Vice-Diretor")
+        professores = ""
+        # Total de professores depende do formato da ficha; não inferir de matrículas.
+        return {
+            "Codigo_SEDUC": cod, "Escola": nome, "Municipio": MUNICIPIOS_GPS[municipio][0],
+            "Latitude": lat, "Longitude": lon,
+            "Logradouro": gps_pdf_campo(texto, "Logradouro"),
+            "Numero": gps_pdf_campo(texto, "Número"),
+            "Bairro": gps_pdf_campo(texto, "Bairro"),
+            "CEP": gps_pdf_campo(texto, "CEP"),
+            "Diretor": gestor, "Vice_Diretor": vice, "Coordenador": coordenador,
+            "Professores": professores,
+            "Fonte": arquivo.name,
+        }, None
+    except Exception as exc:
+        return None, "Não foi possível ler este PDF: " + str(exc)[:140]
+
+
+def gps_municipio_geojson(props):
+    for chave in ("NM_MUN", "nm_mun", "nome", "NOME", "name", "municipio", "Município"):
+        if props.get(chave):
+            return normalizar_texto(props[chave])
+    return ""
+
+
+def gps_geojson_seis_municipios(conteudo):
+    try:
+        dados = json.loads(conteudo)
+        if dados.get("type") != "FeatureCollection":
+            return None, "O arquivo deve ser GeoJSON FeatureCollection do IBGE."
+        feats = [f for f in dados.get("features", []) if gps_municipio_geojson(f.get("properties", {})) in MUNICIPIOS_GPS]
+        municipios = {gps_municipio_geojson(f.get("properties", {})) for f in feats}
+        if len(municipios) != 6:
+            return None, f"A malha contém {len(municipios)} dos 6 municípios necessários. Confira o GeoJSON do IBGE."
+        return {"type": "FeatureCollection", "features": feats}, None
+    except (ValueError, TypeError) as exc:
+        return None, "GeoJSON inválido: " + str(exc)[:120]
+
+
+def gps_indicadores_mapa(df_ind, nome_escola):
+    """Somente métricas diretamente reconhecíveis. Não mistura semanas/avaliações."""
+    resultado = {"Frequência semanal": "—", "Turma menos frequente": "—", "Prova Paulista": "—", "Abaixo do Básico": "—", "Estudantes": "—"}
+    if df_ind is None or df_ind.empty or "Escola" not in df_ind:
+        return resultado
+    alvo = normalizar_texto(nome_escola).replace("EE ", "")
+    esc = df_ind[df_ind["Escola"].apply(lambda v: normalizar_texto(v).replace("EE ", "") == alvo)]
+    if esc.empty:
+        return resultado
+    # Só apresenta valor quando há um único período de referência e consolidado escolar.
+    if all(c in esc for c in ["Tipo_Indicador", "Nivel_Granularidade", "Periodo", "Proficiencia_Pct"]):
+        freq = esc[(esc["Tipo_Indicador"] == "FREQUENCIA") & (esc["Nivel_Granularidade"] == "ESCOLA")]
+        if not freq.empty and freq["Periodo"].nunique() == 1 and len(freq) == 1:
+            v = pd.to_numeric(freq.iloc[0]["Proficiencia_Pct"], errors="coerce")
+            if pd.notna(v):
+                resultado["Frequência semanal"] = f"{v:.1f}% ({freq.iloc[0]['Periodo']})"
+        # Demais indicadores dependem de schema com edição e métrica explícitos.
+    return resultado
+
+
+def gps_renderizar_mapa(df_ind, df_usuarios, pasta_usuario, escolas_usuario):
+    st.subheader("🗺️ Mapa Territorial — URE Miracatu")
+    st.caption("Seis municípios, divisas oficiais do IBGE, 40 escolas e sede regional. Cadastro em fase de implantação.")
+    st.info("Os PDFs e o GeoJSON enviados nesta tela são temporários nesta sessão. Baixe o CSV gerado e guarde-o em local institucional seguro; o envio automático ao Drive ainda não está configurado.")
+    if "gps_escolas_geo" not in st.session_state:
+        st.session_state["gps_escolas_geo"] = {}
+    if "gps_malha_geo" not in st.session_state:
+        st.session_state["gps_malha_geo"] = None
+    if "gps_ure_coord" not in st.session_state:
+        st.session_state["gps_ure_coord"] = None
+
+    admin = pasta_usuario in ("CEC", "AT")
+    if admin:
+        with st.expander("📥 Cadastro geográfico — acesso administrativo", expanded=False):
+            arquivos = st.file_uploader("Fichas gerenciais da SEDUC (vários PDFs)", type=["pdf"], accept_multiple_files=True, key="gps_pdf_geo")
+            if st.button("Ler e validar fichas", key="gps_processar_pdf"):
+                erros = []
+                for arquivo in arquivos or []:
+                    reg, erro = gps_extrair_ficha_pdf(arquivo)
+                    if erro:
+                        erros.append(f"{arquivo.name}: {erro}")
+                    else:
+                        st.session_state["gps_escolas_geo"][reg["Codigo_SEDUC"]] = reg
+                st.success(f"{len(st.session_state['gps_escolas_geo'])} escolas válidas cadastradas nesta sessão.")
+                for erro in erros[:30]:
+                    st.warning(erro)
+            arquivo_csv = st.file_uploader("Opcional: recuperar cadastro CSV anteriormente exportado", type=["csv"], key="gps_csv_geo")
+            if arquivo_csv is not None and st.button("Carregar cadastro CSV", key="gps_import_csv"):
+                try:
+                    df_c = pd.read_csv(arquivo_csv, dtype={"Codigo_SEDUC": str})
+                    req = {"Codigo_SEDUC", "Escola", "Municipio", "Latitude", "Longitude"}
+                    if not req.issubset(df_c.columns):
+                        st.error("CSV sem as colunas obrigatórias.")
+                    else:
+                        ok = 0
+                        for _, r in df_c.iterrows():
+                            municipio = normalizar_texto(r["Municipio"])
+                            try:
+                                lat, lon = float(r["Latitude"]), float(r["Longitude"])
+                            except (ValueError, TypeError):
+                                continue
+                            if municipio in MUNICIPIOS_GPS and -25.5 < lat < -23 and -49 < lon < -46:
+                                st.session_state["gps_escolas_geo"][str(r["Codigo_SEDUC"])] = r.fillna("").to_dict()
+                                ok += 1
+                        st.success(f"{ok} registros importados para a sessão.")
+                except Exception as exc:
+                    st.error(f"Erro ao importar CSV: {exc}")
+            malha = st.file_uploader("Malha municipal oficial do IBGE — arquivo GeoJSON", type=["geojson", "json"], key="gps_geojson_ibge")
+            if malha is not None and st.button("Validar malha dos seis municípios", key="gps_validar_geo"):
+                geo, erro = gps_geojson_seis_municipios(malha.getvalue().decode("utf-8-sig"))
+                if erro:
+                    st.error(erro)
+                else:
+                    st.session_state["gps_malha_geo"] = geo
+                    st.success("Divisas dos seis municípios validadas.")
+            st.markdown("**Coordenadas da sede da URE (validar antes de salvar)**")
+            c1, c2 = st.columns(2)
+            with c1:
+                lat_s = st.number_input("Latitude da sede", value=0.0, format="%.8f", key="gps_lat_sede")
+            with c2:
+                lon_s = st.number_input("Longitude da sede", value=0.0, format="%.8f", key="gps_lon_sede")
+            if st.button("Confirmar coordenadas da URE", key="gps_confirmar_sede"):
+                if -25.5 < lat_s < -23 and -49 < lon_s < -46:
+                    st.session_state["gps_ure_coord"] = (lat_s, lon_s)
+                    st.success("Sede confirmada nesta sessão.")
+                else:
+                    st.error("Insira coordenadas válidas e verificadas da sede.")
+            if st.session_state["gps_escolas_geo"]:
+                df_export = pd.DataFrame(st.session_state["gps_escolas_geo"].values())
+                st.download_button("⬇️ Baixar cadastro das escolas (CSV)", df_export.to_csv(index=False).encode("utf-8-sig"), "Geolocalizacao_Escolas.csv", "text/csv", key="gps_exportar_geo")
+
+    registros = list(st.session_state["gps_escolas_geo"].values())
+    if pasta_usuario == "QUALIDADE DA AULA":
+        autorizadas = {normalizar_texto(e).replace("EE ", "") for e in escolas_usuario}
+        registros = [r for r in registros if normalizar_texto(r["Escola"]).replace("EE ", "") in autorizadas]
+    elif not admin:
+        # Demais PECs têm acesso ao mapa territorial, sem dados nominais de estudantes.
+        pass
+    st.metric("Escolas com coordenadas cadastradas", f"{len(st.session_state['gps_escolas_geo'])}/40")
+    if not st.session_state["gps_malha_geo"]:
+        st.warning("Para exibir as divisas reais, carregue o GeoJSON oficial do IBGE com os seis municípios. Não serão desenhadas divisas aproximadas.")
+        return
+    if not st.session_state["gps_ure_coord"]:
+        st.warning("Confirme as coordenadas da sede da URE para apresentar seu marcador exclusivo.")
+        return
+    if not registros:
+        st.warning("Ainda não há escolas cadastradas e autorizadas para este perfil. Importe as fichas gerenciais.")
+        return
+    opcoes = ["Todos os municípios"] + [v[0] for v in MUNICIPIOS_GPS.values()]
+    municipio_filtro = st.selectbox("Município", opcoes, key="gps_municipio_filtro")
+    ure_lat, ure_lon = st.session_state["gps_ure_coord"]
+    mapa = folium.Map(location=[ure_lat, ure_lon], zoom_start=9, tiles="OpenStreetMap", control_scale=True)
+    geo = st.session_state["gps_malha_geo"]
+    for feature in geo["features"]:
+        mun = gps_municipio_geojson(feature.get("properties", {}))
+        if mun not in MUNICIPIOS_GPS:
+            continue
+        nome, forte, claro = MUNICIPIOS_GPS[mun]
+        folium.GeoJson(feature, name=nome, style_function=lambda f, c=forte, fill=claro: {"color": c, "weight": 2.5, "fillColor": fill, "fillOpacity": .45}, tooltip=folium.Tooltip(nome)).add_to(mapa)
+    for r in registros:
+        if municipio_filtro != "Todos os municípios" and normalizar_texto(r["Municipio"]) != normalizar_texto(municipio_filtro):
+            continue
+        mun = normalizar_texto(r["Municipio"])
+        if mun not in MUNICIPIOS_GPS:
+            continue
+        cor = MUNICIPIOS_GPS[mun][1]
+        try:
+            lat, lon = float(r["Latitude"]), float(r["Longitude"])
+        except (TypeError, ValueError):
+            continue
+        indicadores = gps_indicadores_mapa(df_ind, r["Escola"])
+        linhas = [f"<b>{html_escape(str(r['Escola']))}</b>", f"Município: {html_escape(str(r['Municipio']))}"]
+        for chave, coluna in (("Diretor", "Diretor"), ("Vice-diretor", "Vice_Diretor"), ("Coordenador", "Coordenador"), ("Professores", "Professores")):
+            if str(r.get(coluna, "")).strip() and str(r.get(coluna, "")).lower() != "nan":
+                linhas.append(f"{chave}: {html_escape(str(r[coluna]))}")
+        for chave, valor in indicadores.items():
+            linhas.append(f"{html_escape(chave)}: {html_escape(str(valor))}")
+        maps_url = "https://www.google.com/maps/search/?api=1&query=" + urllib.parse.quote(f"{lat},{lon}")
+        popup_html = "<div style='width:280px'>" + "<br>".join(linhas) + f"<br><br><a href='{maps_url}' target='_blank' rel='noopener noreferrer'>📍 Abrir no Google Maps</a></div>"
+        folium.Marker([lat, lon], tooltip=folium.Tooltip("<br>".join(linhas), sticky=True), popup=folium.Popup(popup_html, max_width=340), icon=folium.DivIcon(html=f"<div style='background:{cor};color:white;border:2px solid white;border-radius:50% 50% 50% 0;transform:rotate(-45deg);width:28px;height:28px;box-shadow:0 1px 5px #666'><span style='display:block;transform:rotate(45deg);text-align:center;line-height:26px;font-size:16px'>🏫</span></div>", icon_size=(30,30), icon_anchor=(15,30))).add_to(mapa)
+    folium.Marker([ure_lat, ure_lon], tooltip="SEDE DA URE MIRACATU", popup="SEDE DA URE MIRACATU", icon=folium.DivIcon(html="<div style='background:#202C3B;color:#fff;border:3px solid #D4A646;border-radius:50%;width:42px;height:42px;display:flex;align-items:center;justify-content:center;font-size:24px;box-shadow:0 2px 8px #555'>★</div>", icon_size=(48,48), icon_anchor=(24,24))).add_to(mapa)
+    folium.LayerControl(collapsed=True).add_to(mapa)
+    st_folium(mapa, height=630, width=None, returned_objects=[], key="gps_mapa_territorial")
+    st.caption("Acesso ao Google Maps pelo link no marcador. Distâncias rodoviárias, histórico de visitas e mapa de calor exigem dados e integração adicionais; não são calculados nesta versão.")
+
 # ==============================================================================
 # AUTENTICAÇÃO E SESSÃO
 # ==============================================================================
@@ -1975,11 +2212,12 @@ lista_abas = [
     "📝 Avaliações",
     "💻 Plataformas Digitais",
     "🏫 Frequência Escolar",
+    "🗺️ Mapa Territorial",
     "📅 Agenda SEDUC, CEC & Feriados",
     "📚 Diretrizes das Pastas (Res. SEDUC 01/2026)"
 ]
 if eh_cec_ou_at:
-    lista_abas.insert(4, "🛡️ Painel Exclusivo CEC (Confronto & Fechamento)")
+    lista_abas.insert(5, "🛡️ Painel Exclusivo CEC (Confronto & Fechamento)")
 
 abas = st.tabs(lista_abas)
 
@@ -2564,9 +2802,9 @@ with abas[3]:
     renderizar_tabela_hierarquica(df_fr_filt, f"Frequência Escolar ({per_fr_sel})", "Frequência Média (%)")
 
 # --- ABA EXCLUSIVA DO CEC / AT: CONFRONTO & FECHAMENTO MENSAL ---
-idx_proxima_aba = 4
+idx_proxima_aba = 5
 if eh_cec_ou_at:
-    with abas[4]:
+    with abas[5]:
         st.subheader("🛡️ Painel Exclusivo CEC — Controle de Prazos (2º Dia Útil), Confronto & Justificativas")
         st.caption("Visão global de todos os PECs, confrontando Planos de Trabalho enviados até o 2º dia útil x Termos de Visita depositados no Google Drive.")
 
@@ -2619,7 +2857,7 @@ if eh_cec_ou_at:
                 file_name=f"Relatorio_Gerencial_CEC_URE_Miracatu_{datetime.now().strftime('%Y%m%d')}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
-    idx_proxima_aba = 5
+    idx_proxima_aba = 6
 
 # --- ABA AGENDA SEDUC, CEC & FERIADOS ---
 with abas[idx_proxima_aba]:
@@ -2657,3 +2895,8 @@ with abas[idx_proxima_aba]:
 with abas[idx_proxima_aba + 1]:
     st.subheader("Base Legal e Foco Pedagógico por Pasta (Resolução SEDUC Nº 01/2026)")
     st.dataframe(df_pastas, use_container_width=True)
+
+
+# --- ABA MAPA TERRITORIAL (NOVO MÓDULO GPS V3) ---
+with abas[4]:
+    gps_renderizar_mapa(df_ind_usuario, df_usuarios, pasta_atual, escolas_usuario)
