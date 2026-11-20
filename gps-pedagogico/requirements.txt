@@ -6,3 +6,5 @@ pypdf
 python-docx
 holidays
 icalendar
+folium
+streamlit-folium
