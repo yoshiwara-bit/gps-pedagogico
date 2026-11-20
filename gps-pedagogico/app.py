@@ -33,6 +33,60 @@ GID_AGENDA_SEDUC_EEC = "1592431035"
 ID_PASTA_DRIVE_GPS = "1FlLFdnhzUZJeR6ujwN4LP8jldIsMSg8m"
 URL_PASTA_DRIVE_GPS = f"https://drive.google.com/drive/folders/{ID_PASTA_DRIVE_GPS}?usp=sharing"
 
+# Fontes documentais: IDs informados pela URE. Não alterar o Drive original.
+PASTAS_FONTES_GPS = {
+    "01 - Cadastro das Escolas": "1ACYYFNq7igDwWWm-wfG-OGb7qtTwxmWO",
+    "02 - Avaliações": "10zb-l_xNYiCmVlgUjpNpGSHmvXfv_-dJ",
+    "03 - Frequência Escolar": "1LbYPCLoFMTxqho5dgF0-c_TF-x_XowN9",
+    "04 - Plataformas Digitais": "1SfLLugy9Ncxtit-oasqgiYUy7c6yX-h7",
+}
+
+@st.cache_data(ttl=300, show_spinner=False)
+def inventariar_fonte_drive(folder_id, api_key):
+    """Lista metadados recursivos, sem baixar PDFs nem classificar visitas.
+
+    Uma chave de API só permite listar pastas acessíveis a ela; 403/404 são
+    reportados explicitamente para não parecer que uma pasta está vazia.
+    """
+    if not api_key or "COLE_AQUI" in api_key:
+        return [], "Chave de API não configurada."
+    arquivos = []
+    visitados = set()
+    def visitar(fid, caminho, profundidade):
+        if profundidade > 8 or fid in visitados:
+            return
+        visitados.add(fid)
+        token = None
+        while True:
+            params = {"q": f"'{fid}' in parents and trashed = false",
+                      "fields": "nextPageToken,files(id,name,mimeType,modifiedTime)",
+                      "pageSize": "1000", "key": api_key}
+            if token:
+                params["pageToken"] = token
+            url = "https://www.googleapis.com/drive/v3/files?" + urllib.parse.urlencode(params)
+            try:
+                with urllib.request.urlopen(url, timeout=15) as response:
+                    dados = json.loads(response.read().decode("utf-8"))
+            except Exception as exc:
+                raise RuntimeError(f"Não foi possível listar {caminho or 'pasta principal'}: {exc}") from exc
+            for item in dados.get("files", []):
+                nome = item.get("name", "")
+                if item.get("mimeType") == "application/vnd.google-apps.folder":
+                    visitar(item["id"], f"{caminho}/{nome}".strip("/"), profundidade+1)
+                else:
+                    arquivos.append({"Pasta": caminho or "(raiz)", "Arquivo": nome,
+                                     "Tipo": item.get("mimeType", ""),
+                                     "Atualização": item.get("modifiedTime", "")})
+            token = dados.get("nextPageToken")
+            if not token:
+                break
+    try:
+        visitar(folder_id, "", 0)
+        return arquivos, None
+    except Exception as exc:
+        return arquivos, str(exc)
+
+
 GOOGLE_DRIVE_API_KEY = st.secrets.get("GOOGLE_DRIVE_API_KEY", "COLE_AQUI_SUA_CHAVE_AIza...")
 URL_GOOGLE_AGENDA_CEC = "COLE_AQUI_SEU_ENDERECO_SECRETO_ICAL.ics"
 EMAIL_DISPARADOR = "seu.email.sistema@gmail.com"
@@ -1413,6 +1467,15 @@ def sincronizar_pasta_drive_completo(folder_id, api_key):
                     if n_low.endswith(".pdf") or f_mime == "application/pdf":
                         leitor = PdfReader(arq_bytes)
                         texto_pdf = "\n".join([p.extract_text() or "" for p in leitor.pages])
+                        # Somente termos de visita são contabilizados como acompanhamento.
+                        # Relatórios SARESP/SAEB, fichas e outros PDFs não são termos.
+                        caminho_norm = normalizar_texto(caminho_pasta)
+                        nome_norm = normalizar_texto(f_name)
+                        texto_norm = normalizar_texto(texto_pdf[:5000])
+                        pasta_termo = any(m in caminho_norm for m in ("TERMOS_DE_VISITA", "TERMOS DE VISITA", "PASTA_PEC_"))
+                        documento_termo = any(m in nome_norm or m in texto_norm for m in ("TERMO DE VISITA", "TERMO DE ACOMPANHAMENTO", "TERMO_DE_VISITA", "ACOMPANHAMENTO PEDAGOGICO"))
+                        if not (pasta_termo and documento_termo):
+                            continue
                         pec_nome = os.path.basename(caminho_pasta).replace("Pasta_PEC_", "").strip() or "PEC"
                         escola_enc = next((e for e in ESCOLAS_URE_MIRACATU if normalizar_texto(e) in normalizar_texto(texto_pdf) or normalizar_texto(e) in normalizar_texto(f_name)), "Escola não identificada no PDF")
                         m_data = re.search(r"(\d{2}/\d{2}/\d{4})", texto_pdf)
@@ -1926,12 +1989,86 @@ with st.sidebar:
     st.info(f"📅 **Prazo Plano de Trabalho:** até o 2º dia útil ({limite_2du.strftime('%d/%m/%Y')})")
 
     st.markdown("---")
+    st.markdown("### Navegação")
+    pagina_gps = st.radio(
+        "Módulo", ["🗺️ Mapa Territorial", "📁 Fontes de Dados", "📋 Planejamento e Indicadores"],
+        key="gps_modulo", label_visibility="collapsed"
+    )
+    if pagina_gps == "📋 Planejamento e Indicadores":
+        st.caption("Plano de trabalho, avaliações, plataformas, frequência, CEC, agenda e diretrizes nas abas existentes.")
+    st.markdown("---")
     if st.button("🔄 Sincronizar Planilhas & Drive", use_container_width=True):
         st.cache_data.clear()
         st.rerun()
     if st.button("🚪 Sair / Trocar Usuário", use_container_width=True):
         st.session_state["autenticado"] = False
         st.rerun()
+
+# ==============================================================================
+# MAPA TERRITORIAL — HOME (cadastro validado por código SEDUC)
+# ==============================================================================
+if pagina_gps == "🗺️ Mapa Territorial":
+    st.title("🗺️ Mapa Territorial — URE Miracatu")
+    st.caption("Unidades cadastradas a partir das Fichas Gerenciais; sem geocodificação estimada.")
+    import pathlib
+    caminho_csv = pathlib.Path(__file__).resolve().parent / "GPS_cadastro_40_unidades.csv"
+    if not caminho_csv.exists():
+        st.warning("Cadastro ainda não publicado. Coloque GPS_cadastro_40_unidades.csv na mesma pasta do app.py no GitHub.")
+    else:
+        cadastro = pd.read_csv(caminho_csv, dtype={"codigo_seduc": str})
+        cadastro["latitude"] = pd.to_numeric(cadastro["latitude"], errors="coerce")
+        cadastro["longitude"] = pd.to_numeric(cadastro["longitude"], errors="coerce")
+        cadastro = cadastro.dropna(subset=["latitude", "longitude"]).drop_duplicates("codigo_seduc")
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Unidades cadastradas", len(cadastro))
+        c2.metric("Municípios", cadastro["municipio"].nunique())
+        c3.metric("Com coordenadas", len(cadastro))
+        municipios = sorted(cadastro["municipio"].dropna().unique())
+        municipio_sel = st.selectbox("Município", ["Todos"] + municipios, key="gps_municipio_mapa")
+        filtrado = cadastro if municipio_sel == "Todos" else cadastro[cadastro["municipio"] == municipio_sel]
+        busca = st.text_input("Buscar unidade ou código SEDUC", key="gps_busca_mapa")
+        if busca.strip():
+            filtrado = filtrado[filtrado["escola"].str.contains(busca, case=False, na=False, regex=False) | filtrado["codigo_seduc"].str.contains(busca, case=False, na=False, regex=False)]
+        if filtrado.empty:
+            st.info("Nenhuma unidade encontrada com esses filtros.")
+        else:
+            try:
+                import pydeck as pdk
+                camada = pdk.Layer("ScatterplotLayer", data=filtrado, get_position="[longitude, latitude]", get_radius=850, radius_min_pixels=5, radius_max_pixels=11, get_fill_color=[15, 117, 130, 210], pickable=True)
+                vista = pdk.ViewState(latitude=float(filtrado.latitude.mean()), longitude=float(filtrado.longitude.mean()), zoom=9 if municipio_sel == "Todos" else 11)
+                st.pydeck_chart(pdk.Deck(layers=[camada], initial_view_state=vista, tooltip={"html": "<b>{escola}</b><br/>{municipio}<br/>Código SEDUC: {codigo_seduc}", "style": {"color": "white"}}), use_container_width=True)
+            except ImportError:
+                st.map(filtrado, latitude="latitude", longitude="longitude")
+            st.dataframe(filtrado[["codigo_seduc", "escola", "municipio", "tipo", "logradouro", "numero"]], use_container_width=True, hide_index=True)
+            escola_sel = st.selectbox("Detalhes da unidade", filtrado["codigo_seduc"].tolist(), format_func=lambda cod: filtrado.loc[filtrado.codigo_seduc == cod, "escola"].iloc[0], key="gps_escola_mapa")
+            registro = filtrado.loc[filtrado.codigo_seduc == escola_sel].iloc[0]
+            st.write(f"**{registro['escola']}** — {registro['municipio']} | Código SEDUC: {registro['codigo_seduc']}")
+            st.write(f"Endereço: {registro['logradouro']}, {registro['numero']}")
+            st.link_button("Abrir localização no Google Maps", f"https://www.google.com/maps/search/?api=1&query={registro['latitude']},{registro['longitude']}")
+    st.info("Próximas integrações: leitura autenticada do Drive, indicadores por escola/turma, rotas reais e cobertura de visitas. Os dados ainda não estão vinculados ao mapa.")
+    st.stop()
+
+if pagina_gps == "📁 Fontes de Dados":
+    st.title("📁 Fontes de Dados — GPS URE Miracatu")
+    st.caption("Inventário de arquivos nas pastas do Drive. A listagem não importa nem consolida resultados automaticamente.")
+    fonte = st.selectbox("Fonte", list(PASTAS_FONTES_GPS), key="gps_fonte_drive")
+    pasta_id = PASTAS_FONTES_GPS[fonte]
+    st.link_button("Abrir pasta no Google Drive", f"https://drive.google.com/drive/folders/{pasta_id}")
+    with st.spinner("Verificando acesso e arquivos..."):
+        itens, erro = inventariar_fonte_drive(pasta_id, GOOGLE_DRIVE_API_KEY)
+    if erro:
+        st.error("Acesso ou leitura não confirmado: " + erro)
+        st.info("O acesso a outras pastas do Drive não garante acesso a esta. Não torne os arquivos públicos; uma autorização privada poderá ser necessária.")
+    if itens:
+        inventario = pd.DataFrame(itens)
+        st.metric("Arquivos encontrados", len(inventario))
+        st.dataframe(inventario, use_container_width=True, hide_index=True)
+        st.download_button("Baixar inventário CSV", inventario.to_csv(index=False).encode("utf-8-sig"),
+                           file_name="gps_inventario_drive.csv", mime="text/csv")
+    elif not erro:
+        st.info("Nenhum arquivo encontrado nesta pasta ou nas subpastas acessíveis.")
+    st.warning("Resultados Geral/Escola/Turma ainda dependem de leitura e validação das planilhas. Este painel mostra somente o inventário.")
+    st.stop()
 
 st.title("🧭 GPS — Guia Pedagógico Semanal")
 st.caption("Planejamento Mensal Integrado, Indicadores Hierárquicos e Acompanhamento — URE de Miracatu")
