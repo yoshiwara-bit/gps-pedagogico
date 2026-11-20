@@ -2065,6 +2065,30 @@ def gps_limites_ibge():
         return None, str(exc)
 
 
+def gps_centroide_rotulo_municipio(geometria):
+    """Centroide ponderado dos anéis externos, para rotulagem visual (não geodésica)."""
+    poligonos = ([geometria["coordinates"]] if geometria["type"] == "Polygon"
+                 else geometria["coordinates"])
+    partes = []
+    for poligono in poligonos:
+        anel = poligono[0]
+        area_dupla = cx = cy = 0.0
+        for i in range(len(anel) - 1):
+            x0, y0 = anel[i]
+            x1, y1 = anel[i + 1]
+            cruz = x0 * y1 - x1 * y0
+            area_dupla += cruz
+            cx += (x0 + x1) * cruz
+            cy += (y0 + y1) * cruz
+        if abs(area_dupla) > 1e-12:
+            partes.append((abs(area_dupla), cx / (3 * area_dupla), cy / (3 * area_dupla)))
+    if not partes:
+        raise ValueError("Geometria sem área para posicionar o nome do município")
+    total = sum(parte[0] for parte in partes)
+    return (sum(a * x for a, x, y in partes) / total,
+            sum(a * y for a, x, y in partes) / total)
+
+
 def gps_identificar_escola(texto, cadastro):
     """Correspondência conservadora; códigos SEDUC prevalecem sobre nomes."""
     texto = str(texto or "")
@@ -2073,10 +2097,15 @@ def gps_identificar_escola(texto, cadastro):
         if re.search(r"(?<!\d)" + re.escape(codigo) + r"(?!\d)", texto):
             return codigo
     texto_norm = normalizar_texto(texto)
+    # Ignore generic prefix and titles; compare distinctive school name tokens.
+    texto_norm = re.sub(r"\b(ESCOLA|ESTADUAL|EE|PROFESSORA?|PREFEITO|ENGENHEIRO|DE|DA|DO|DOS|DAS)\b", " ", texto_norm)
+    texto_norm = " ".join(texto_norm.split())
     achados = []
     for _, escola in cadastro.iterrows():
         nome = normalizar_texto(str(escola["escola"]))
-        if len(nome) >= 9 and nome in texto_norm:
+        nome = re.sub(r"\b(ESCOLA|ESTADUAL|EE|PROFESSORA?|PREFEITO|ENGENHEIRO|DE|DA|DO|DOS|DAS)\b", " ", nome)
+        nome = " ".join(nome.split())
+        if len(nome) >= 6 and (nome in texto_norm or texto_norm in nome and len(texto_norm) >= 9):
             achados.append(str(escola["codigo_seduc"]))
     return achados[0] if len(achados) == 1 else None
 
@@ -2087,6 +2116,7 @@ def gps_carregar_agenda_consolidada(cadastro):
     arq = Path(__file__).resolve().parent / "GPS_agenda_pecs_novembro_2026.csv"
     cols = ["codigo_seduc", "PEC", "Pasta", "Data", "Atividade", "Fonte", "Situação", "Objetivo", "Horário"]
     if not arq.exists():
+        st.warning("Agenda de visitas não encontrada: envie GPS_agenda_pecs_novembro_2026.csv para a mesma pasta do app.py no GitHub. Sem esse arquivo, o mapa não consegue mostrar visitas programadas que não estejam nos planos já importados.")
         return pd.DataFrame(columns=cols)
     try:
         base = pd.read_csv(arq, dtype=str, keep_default_na=False, encoding="utf-8-sig")
@@ -2095,20 +2125,24 @@ def gps_carregar_agenda_consolidada(cadastro):
             st.warning("Agenda consolidada incompleta: faltam colunas " + ", ".join(sorted(obrig-set(base.columns))))
             return pd.DataFrame(columns=cols)
         saida = []
-        ignorados = 0
-        for _, r in base.iterrows():
+        ignorados = []
+        for indice, r in base.iterrows():
             data = pd.to_datetime(str(r["Data"]), format="%d/%m/%Y", errors="coerce")
             codigo = str(r.get("codigo_seduc", "")).strip()
             if codigo not in set(cadastro["codigo_seduc"].astype(str)):
                 codigo = gps_identificar_escola(r["Escola"], cadastro)
             if pd.isna(data) or not codigo:
-                ignorados += 1
+                ignorados.append({"linha_csv": indice + 2, "PEC": r.get("PEC", ""),
+                                  "Escola": r.get("Escola", ""), "Data": r.get("Data", ""),
+                                  "Motivo": "Data inválida" if pd.isna(data) else "Escola não identificada com segurança"})
                 continue
             saida.append({"codigo_seduc": codigo, "PEC": r["PEC"], "Pasta": r.get("Pasta", "Não informada"),
                 "Data": data.date(), "Atividade": r["Atividade"], "Fonte": r["Fonte"],
                 "Situação": "Programada", "Objetivo": r["Objetivo"], "Horário": r.get("Horário", "Não informado")})
         if ignorados:
-            st.caption(f"Agenda: {ignorados} registro(s) sem data válida de novembro ou sem correspondência segura com o cadastro foram ignorados.")
+            st.warning(f"Agenda: {len(ignorados)} registro(s) não foram reconhecidos. Confira as linhas abaixo.")
+            with st.expander("Ver registros rejeitados da agenda"):
+                st.dataframe(pd.DataFrame(ignorados), hide_index=True, use_container_width=True)
         return pd.DataFrame(saida, columns=cols)
     except Exception as exc:
         st.warning(f"Não foi possível ler a agenda consolidada: {exc}")
@@ -2309,7 +2343,8 @@ def gps_alertas_termos(agenda, termos, hoje=None):
 if pagina_gps == "🗺️ Mapa Territorial":
     import pathlib
     import pydeck as pdk
-    st.title("🗺️ Mapa Territorial — URE Miracatu")
+    from urllib.parse import quote as gps_url_quote
+    st.title("🗺️ Mapa Territorial — URE Miracatu | V10 Plus")
     caminho_csv = pathlib.Path(__file__).resolve().parent / "GPS_cadastro_40_unidades.csv"
     if not caminho_csv.exists():
         st.error("Arquivo GPS_cadastro_40_unidades.csv não encontrado junto ao app.py.")
@@ -2354,38 +2389,27 @@ if pagina_gps == "🗺️ Mapa Territorial":
                     "Horário":"Não informado","Pasta":"Não informada","Fonte":str(tr.get("Arquivo_Termo_PDF", "Termo")),
                     "Situação":"Documentada"})
     termos_mapa = pd.DataFrame(registros_termos)
-    col_periodo, col_data, col_pec = st.columns([1,1,2])
-    modo_tempo = col_periodo.selectbox("Período temporal", ["Presente", "Passado", "Futuro"], key="gps_mapa_tempo")
+    col_data, col_pec = st.columns([1, 2])
     data_ref = col_data.date_input("Data de referência", value=hoje_mapa, key="gps_mapa_data_ref")
     pecs_mapa = sorted(set(agenda.get("PEC", pd.Series(dtype=str)).dropna().astype(str).tolist()) |
                        set(termos_mapa.get("PEC", pd.Series(dtype=str)).dropna().astype(str).tolist()))
-    pec_mapa = col_pec.selectbox("PEC", ["Todos"]+pecs_mapa, key="gps_mapa_pec")
+    pec_mapa = col_pec.selectbox("PEC", ["Todos"] + pecs_mapa, key="gps_mapa_pec")
+    # Calendário único: data futura/atual = agenda; data passada = documentos
+    # e programação original, sem presumir visita realizada por ausência de termo.
+    modo_tempo = "Passado" if data_ref < hoje_mapa else ("Presente" if data_ref == hoje_mapa else "Futuro")
+    agenda_dia = agenda[agenda["Data"] == data_ref].copy() if not agenda.empty else agenda.copy()
+    termos_dia = termos_mapa[termos_mapa["Data"] == data_ref].copy() if not termos_mapa.empty else termos_mapa.copy()
     if modo_tempo == "Passado":
-        inicio_mapa = st.date_input("Início do histórico", value=date(2026,11,1), key="gps_mapa_inicio")
-        fim_mapa = min(data_ref, hoje_mapa)
-        if inicio_mapa > fim_mapa:
-            st.warning("O início do histórico é posterior à data final.")
-    elif modo_tempo == "Futuro":
-        inicio_mapa, fim_mapa = max(data_ref, hoje_mapa), None
+        visitas_periodo = termos_dia.copy()
+        st.caption("Data passada: o mapa destaca acompanhamentos com termo identificado. Programações sem termo continuam na conferência documental, sem conclusão automática de não realização.")
     else:
-        inicio_mapa, fim_mapa = data_ref, data_ref
-    if modo_tempo == "Passado":
-        visitas_periodo = termos_mapa.copy()
-        if not visitas_periodo.empty:
-            visitas_periodo = visitas_periodo[(visitas_periodo["Data"]>=inicio_mapa)&(visitas_periodo["Data"]<=fim_mapa)]
-        # Programações não documentadas permanecem pendentes, sem serem somadas à cobertura realizada.
-    else:
-        visitas_periodo = agenda.copy()
-        if not visitas_periodo.empty:
-            if modo_tempo == "Presente":
-                visitas_periodo = visitas_periodo[visitas_periodo["Data"]==data_ref]
-            else:
-                visitas_periodo = visitas_periodo[visitas_periodo["Data"]>=inicio_mapa]
-            visitas_periodo = visitas_periodo[~visitas_periodo["Data"].isin(FERIADOS_EEC)]
+        visitas_periodo = agenda_dia.copy()
+    if data_ref in FERIADOS_EEC:
+        if not agenda_dia.empty:
+            st.warning("30/11/2026: feriado institucional para toda a EEC. Existem registros planejados para essa data; verifique o remanejamento.")
+        visitas_periodo = visitas_periodo.iloc[0:0].copy()
     if pec_mapa != "Todos" and not visitas_periodo.empty:
         visitas_periodo = visitas_periodo[visitas_periodo["PEC"]==pec_mapa]
-    if data_ref in FERIADOS_EEC and modo_tempo == "Presente":
-        st.info("30/11/2026 — feriado institucional da sede: nenhum PEC em expediente, independentemente do município da escola.")
     resumo = {}
     if not visitas_periodo.empty:
         for cod, g in visitas_periodo.groupby("codigo_seduc"):
@@ -2396,7 +2420,11 @@ if pagina_gps == "🗺️ Mapa Territorial":
     c1,c2,c3 = st.columns(3)
     c1.metric("Unidades georreferenciadas",len(cadastro))
     c2.metric("Escolas no período",sum(v>0 for v in contagens.values()))
-    c3.metric("Visitas documentadas" if modo_tempo=="Passado" else "Visitas programadas",len(visitas_periodo))
+    c3.metric("Visitas com termo" if modo_tempo=="Passado" else "Visitas programadas",len(visitas_periodo))
+    if modo_tempo != "Passado" and agenda.empty:
+        st.error("Nenhuma visita programada foi carregada. Confira o arquivo CSV da agenda e a importação dos Planos de Trabalho. Zero neste painel significa ausência de dados válidos, não ausência de visitas.")
+    elif modo_tempo != "Passado" and visitas_periodo.empty:
+        st.info("Há agenda carregada, mas nenhuma visita corresponde à data e aos filtros selecionados. Confira o dia de referência, o PEC e a abrangência dos dados importados.")
     f1,f2,f3 = st.columns([1,2,1])
     municipios = sorted(cadastro["municipio"].unique())
     municipio = f1.selectbox("Município",["Todos"]+municipios,key="gps_municipio_mapa")
@@ -2415,6 +2443,23 @@ if pagina_gps == "🗺️ Mapa Territorial":
     if modo == "Mapa de calor":
         max_cont = max(1, int(filtrado["intensidade"].max()))
         filtrado["cor"] = filtrado["intensidade"].apply(lambda n: [190,40,45,240] if n>=max_cont and n>0 else ([240,130,35,225] if n>0 else [175,180,185,120]))
+    # Marcadores tipo pino, conforme referência visual fornecida: cada escola
+    # recebe a cor do seu município, sem alteração das coordenadas cadastrais.
+    # SVG incorporado como data URI: não depende de arquivo extra no GitHub.
+    def gps_icone_escola(cor_rgb):
+        r, g, b = [int(v) for v in cor_rgb[:3]]
+        preenchimento = f"#{r:02x}{g:02x}{b:02x}"
+        svg = ("<svg xmlns='http://www.w3.org/2000/svg' width='64' height='84' viewBox='0 0 64 84'>"
+               "<path d='M32 3C15 3 3 16 3 33c0 22 29 47 29 47s29-25 29-47C61 16 49 3 32 3Z' "
+               f"fill='{preenchimento}' stroke='#14232d' stroke-width='3.5'/>"
+               "<circle cx='32' cy='32' r='13' fill='#ffffff' stroke='#14232d' stroke-width='1.5'/>"
+               "</svg>")
+        return {"url": "data:image/svg+xml;charset=utf-8," + gps_url_quote(svg, safe=''),
+                "width": 64, "height": 84, "anchorX": 32, "anchorY": 80}
+    icones_municipios = {nome: gps_icone_escola(rgb) for nome, rgb in cores.items()}
+    icone_padrao = gps_icone_escola([85, 85, 85])
+    filtrado["icone"] = filtrado["municipio_norm"].map(
+        lambda nome: icones_municipios.get(nome, icone_padrao))
     filtrado["quantidade_visitas"] = filtrado["intensidade"]
     geojson, erro_ibge = gps_limites_ibge()
     camadas = []
@@ -2428,13 +2473,46 @@ if pagina_gps == "🗺️ Mapa Territorial":
         camadas.append(pdk.Layer("GeoJsonLayer",data={"type":"FeatureCollection","features":feats},
                                  filled=True,stroked=True,get_fill_color="properties.fill",get_line_color="properties.line",
                                  line_width_min_pixels=2,pickable=False))
+        # Os nomes ficam acima dos polígonos, com fonte grande e fundo branco.
+        # O rótulo de Pedro de Toledo é criado a partir do próprio polígono do IBGE.
+        rotulos_municipios = []
+        for feicao in feats:
+            try:
+                lon, lat = gps_centroide_rotulo_municipio(feicao["geometry"])
+                nome = feicao["properties"]["municipio"].title()
+                if nome == "Juquia":
+                    nome = "Juquiá"
+                rotulos_municipios.append({"longitude": lon, "latitude": lat, "nome": nome})
+            except (ValueError, KeyError, TypeError, ZeroDivisionError):
+                continue
+        # O TextLayer será inserido depois dos pontos das escolas para garantir legibilidade.
     else:
         st.caption("Limites oficiais do IBGE temporariamente indisponíveis. Os pontos cadastrados continuam visíveis.")
         with st.expander("Detalhes da consulta ao IBGE"):
             st.code(str(erro_ibge))
-    camadas.append(pdk.Layer("ScatterplotLayer",data=filtrado,get_position="[longitude,latitude]",
-                             get_fill_color="cor",get_line_color=[255,255,255,255],line_width_min_pixels=1.5,
-                             get_radius="750 + intensidade * 180",radius_min_pixels=7,radius_max_pixels=26,pickable=True,id="escolas"))
+    # A intensidade continua visível como halo atrás do pino, mas nunca substitui
+    # a cor municipal do georreferenciamento da escola.
+    if modo == "Mapa de calor":
+        camadas.append(pdk.Layer("ScatterplotLayer", data=filtrado,
+                                 get_position="[longitude,latitude]", get_fill_color="cor",
+                                 get_radius="600 + intensidade * 180", radius_min_pixels=9,
+                                 radius_max_pixels=29, stroked=False, pickable=False,
+                                 id="intensidade_escolas"))
+    camadas.append(pdk.Layer("IconLayer", data=filtrado,
+                             get_position="[longitude,latitude]", get_icon="icone",
+                             get_size=37, size_scale=1, size_min_pixels=28,
+                             size_max_pixels=48, billboard=True, pickable=True,
+                             id="escolas"))
+    if geojson and rotulos_municipios:
+        camadas.append(pdk.Layer(
+            "TextLayer", data=rotulos_municipios,
+            get_position="[longitude, latitude]", get_text="nome",
+            get_size=24, size_units="pixels", size_min_pixels=20, size_max_pixels=30,
+            get_color=[10, 22, 32, 255], get_text_anchor="middle",
+            get_alignment_baseline="center", get_background_color=[255, 255, 255, 225],
+            background=True, background_padding=[7, 4, 7, 4],
+            billboard=True, pickable=False, id="nomes_municipios"
+        ))
     # Sede: marcador distinto somente após coordenadas cadastradas em Secrets.
     sede_lat = st.secrets.get("GPS_SEDE_URE_LATITUDE", None)
     sede_lon = st.secrets.get("GPS_SEDE_URE_LONGITUDE", None)
