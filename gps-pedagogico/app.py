@@ -2173,36 +2173,108 @@ def gps_agenda_planos(df_planos, cadastro):
     return pd.DataFrame(registros, columns=["codigo_seduc", "PEC", "Pasta", "Data", "Atividade", "Fonte", "Situação", "Objetivo", "Horário"])
 
 
-def gps_ficha_escola(registro, agenda, termos):
-    st.markdown(f"### 🏫 {registro['escola']}")
-    st.caption(f"{registro['municipio']} · Código SEDUC {registro['codigo_seduc']} · {registro['tipo']}")
-    a,b,c,d = st.tabs(["Identificação", "Agenda dos PECs", "Acompanhamentos", "Indicadores e documentos"])
-    with a:
-        st.write(f"**Endereço:** {registro['logradouro']}, {registro['numero']}")
-        st.write(f"**Coordenadas:** {registro['latitude']:.6f}, {registro['longitude']:.6f}")
-        st.link_button("📍 Localização e rota no Google Maps", f"https://www.google.com/maps/dir/?api=1&destination={registro['latitude']},{registro['longitude']}")
-        st.caption("Gestão, matrículas e demais dados da ficha gerencial dependem da importação validada dos PDFs.")
-    with b:
-        if agenda.empty:
-            st.info("Ainda não há datas de visitas validadas dos Planos de Trabalho. Nenhuma visita será presumida a partir da data de envio do documento.")
-        else:
-            itens = agenda[agenda["codigo_seduc"] == str(registro["codigo_seduc"])].copy()
-            if itens.empty:
-                st.info("Nenhuma visita programada identificada nos dados disponíveis.")
+def gps_ficha_escola(registro, agenda, termos, data_referencia=None):
+    """V11 Plus: painel da escola com menu lateral e cartões temáticos.
+
+    Não cria indicadores não recebidos e não confunde plano com execução.
+    """
+    from html import escape as _esc
+    escola = str(registro.get("escola", "Escola"))
+    codigo = str(registro.get("codigo_seduc", ""))
+    data_referencia = data_referencia or date.today()
+    mes, ano = data_referencia.month, data_referencia.year
+    st.markdown("""<style>
+    .gps11-title{font-size:1.45rem;font-weight:800;color:#17313d;margin-bottom:4px}
+    .gps11-card{padding:18px 17px;border-radius:17px;border:1px solid rgba(24,45,56,.08);min-height:145px}
+    .gps11-card .gps11-label{font-size:.88rem;font-weight:700;letter-spacing:.01em}
+    .gps11-card .gps11-number{font-size:2rem;font-weight:800;margin:12px 0 2px}
+    .gps11-card .gps11-note{font-size:.8rem;opacity:.8}
+    .gps11-blue{background:#e8f3fc;color:#174d78}
+    .gps11-purple{background:#f0eafb;color:#57328a}
+    .gps11-orange{background:#fff1e3;color:#8b4a0c}
+    .gps11-green{background:#e6f4ee;color:#126344}
+    .gps11-teal{background:#e5f5f4;color:#125f67}
+    .gps11-red{background:#fcebed;color:#9d3441}
+    </style>""", unsafe_allow_html=True)
+    st.markdown(f'<div class="gps11-title">🏫 {_esc(escola)}</div>', unsafe_allow_html=True)
+    st.caption(f'{registro.get("municipio", "")} · Código SEDUC {codigo} · {registro.get("tipo", "")}')
+    if agenda is None or agenda.empty or "codigo_seduc" not in agenda:
+        itens = pd.DataFrame()
+    else:
+        itens = agenda[agenda["codigo_seduc"].astype(str) == codigo].copy()
+    if not itens.empty:
+        datas = pd.to_datetime(itens["Data"], errors="coerce")
+        itens_mes = itens[(datas.dt.month == mes) & (datas.dt.year == ano)].copy()
+        itens_dia = itens[datas.dt.date == data_referencia].copy()
+    else:
+        itens_mes, itens_dia = pd.DataFrame(), pd.DataFrame()
+    st.caption(f'Consulta de {mes:02d}/{ano} · {len(itens_mes)} visita(s) programada(s) nos dados carregados · {len(itens_dia)} na data selecionada')
+    lateral, conteudo = st.columns([1, 3], gap="large")
+    secoes = {
+        "🏫 Identificação": ["Dados da unidade", "Equipe gestora", "Matrículas e turmas"],
+        "👥 Frequência Escolar": ["Frequência geral", "Frequência por turma", "Turmas prioritárias"],
+        "📊 Avaliações": ["Raio-X Pedagógico", "Prova Paulista", "SARESP", "SAEB", "Avaliação Diagnóstica", "ENEM e Simulados"],
+        "💻 Plataformas Digitais": ["Visão geral", "Tarefa SP", "Leia SP", "Redação Paulista", "Matific", "Khan Academy", "Speak / Open English", "Alura e Tecnologia"],
+        "📅 Acompanhamentos": ["Visitas do dia", "Visitas do mês", "Termos de Visita", "Justificativas", "Pendências documentais"],
+    }
+    with lateral:
+        st.markdown("**Navegação da escola**")
+        grupo = st.radio("Área", list(secoes), key="gps11_area", label_visibility="collapsed")
+        subitem = st.radio("Subitem", secoes[grupo], key=f"gps11_sub_{grupo}", label_visibility="collapsed")
+    with conteudo:
+        st.subheader(subitem)
+        def cartao(titulo, valor, detalhe, cor):
+            st.markdown(f'<div class="gps11-card gps11-{cor}"><div class="gps11-label">{_esc(titulo)}</div>'
+                        f'<div class="gps11-number">{_esc(str(valor))}</div><div class="gps11-note">{_esc(detalhe)}</div></div>',
+                        unsafe_allow_html=True)
+        if subitem == "Raio-X Pedagógico":
+            a,b = st.columns(2)
+            with a: cartao("👥 Frequência geral", "—", "Farol: sem dados validados", "blue")
+            with b: cartao("📊 Prova Paulista", "—", "Farol: sem dados validados", "purple")
+            a,b = st.columns(2)
+            with a: cartao("📖 Abaixo do Básico · Português", "—", "Quantidade e percentual não disponíveis", "orange")
+            with b: cartao("🔢 Abaixo do Básico · Matemática", "—", "Quantidade e percentual não disponíveis", "green")
+            st.caption("Aguardando dados oficiais. Não é possível inferir níveis de proficiência a partir do percentual de acertos.")
+        elif subitem in ("Visitas do dia", "Visitas do mês"):
+            dados = itens_dia if subitem == "Visitas do dia" else itens_mes
+            a,b = st.columns(2)
+            with a: cartao("📅 Visitas previstas", len(dados), "Conforme os planos efetivamente carregados", "teal")
+            with b: cartao("👤 PECs distintos", dados["PEC"].nunique() if not dados.empty and "PEC" in dados else 0,
+                           "PECs identificados na programação", "blue")
+            if dados.empty:
+                st.info("Nenhuma visita localizada nos documentos carregados para este período. Isso não comprova ausência de planejamento ou visita.")
             else:
-                st.dataframe(itens[["Data","PEC","Pasta","Atividade","Objetivo","Horário","Situação","Fonte"]].sort_values("Data"), hide_index=True, use_container_width=True)
-    with c:
-        if termos is None or termos.empty:
-            st.info("Nenhum termo de visita validado disponível.")
-        else:
-            nome = normalizar_texto(registro["escola"])
-            matches = termos[termos["Escola"].astype(str).map(lambda x: normalizar_texto(x) == nome)] if "Escola" in termos else pd.DataFrame()
-            if matches.empty:
-                st.info("Não foram encontrados termos de visita associados com segurança a esta unidade.")
+                campos = [c for c in ("Data", "PEC", "Horário", "Atividade", "Objetivo", "Situação", "Fonte") if c in dados]
+                st.dataframe(dados[campos].sort_values("Data"), hide_index=True, use_container_width=True)
+        elif subitem == "Dados da unidade":
+            st.write(f'**Endereço:** {registro.get("logradouro", "Não informado")}, {registro.get("numero", "")}, {registro.get("municipio", "")}')
+            lat, lon = registro.get("latitude"), registro.get("longitude")
+            if pd.notna(lat) and pd.notna(lon):
+                st.link_button("📍 Ver rota no Google Maps", f"https://www.google.com/maps/dir/?api=1&destination={lat},{lon}")
+        elif subitem == "Termos de Visita":
+            if termos is None or termos.empty or "Escola" not in termos:
+                st.info("Nenhum Termo de Visita validado disponível nesta fonte.")
             else:
-                st.dataframe(matches, hide_index=True, use_container_width=True)
-    with d:
-        st.info("Os resultados de avaliações, frequência e plataformas serão exibidos após importação e validação das bases de cada fonte.")
+                nome = normalizar_texto(escola)
+                correspondentes = termos[termos["Escola"].astype(str).map(lambda x: normalizar_texto(x) == nome)]
+                if correspondentes.empty:
+                    st.info("Nenhum termo associado com segurança a esta escola. Isso não comprova que a visita não ocorreu.")
+                else:
+                    st.dataframe(correspondentes, hide_index=True, use_container_width=True)
+        elif subitem == "Pendências documentais":
+            cartao("📄 Conferência documental", "—", "Aguardando cruzamento validado de Plano × Termo × Justificativa", "red")
+            st.caption("Ausência de termo não comprova não realização; ausência de justificativa exige conferência.")
+        elif subitem == "Justificativas":
+            st.info("As justificativas serão exibidas após importação e vinculação segura por PEC, escola e data.")
+        elif grupo == "👥 Frequência Escolar":
+            cartao("👥 " + subitem, "—", "Sem dados oficiais sincronizados", "blue")
+            st.info("A frequência por turma depende da importação validada da fonte institucional.")
+        elif grupo == "📊 Avaliações":
+            cartao("📊 " + subitem, "—", "Sem dados oficiais sincronizados", "purple")
+        elif grupo == "💻 Plataformas Digitais":
+            cartao("💻 " + subitem, "—", "Sem dados oficiais sincronizados", "teal")
+        else:
+            cartao("🏫 " + subitem, "—", "Informações aguardando cadastro validado", "blue")
 
 FERIADOS_EEC = {date(2026, 11, 30): "Aniversário de Miracatu — feriado municipal da sede da EEC"}
 PERIODOS_CEC = [(date(2026, 11, 16), date(2026, 11, 29)),
@@ -2399,11 +2471,17 @@ if pagina_gps == "🗺️ Mapa Territorial":
     modo_tempo = "Passado" if data_ref < hoje_mapa else ("Presente" if data_ref == hoje_mapa else "Futuro")
     agenda_dia = agenda[agenda["Data"] == data_ref].copy() if not agenda.empty else agenda.copy()
     termos_dia = termos_mapa[termos_mapa["Data"] == data_ref].copy() if not termos_mapa.empty else termos_mapa.copy()
+    # Exibir toda a programação, inclusive datas passadas. O termo confirma
+    # a documentação, não é requisito para que uma visita prevista apareça.
+    visitas_periodo = agenda_dia.copy()
     if modo_tempo == "Passado":
-        visitas_periodo = termos_dia.copy()
-        st.caption("Data passada: o mapa destaca acompanhamentos com termo identificado. Programações sem termo continuam na conferência documental, sem conclusão automática de não realização.")
-    else:
-        visitas_periodo = agenda_dia.copy()
+        st.caption("Data passada: programação original preservada; a ausência de termo não comprova não realização. Confira a situação documental na ficha.")
+        if not termos_dia.empty:
+            chaves_previstas = set(zip(visitas_periodo.get("codigo_seduc", pd.Series(dtype=str)).astype(str),
+                                       visitas_periodo.get("PEC", pd.Series(dtype=str)).astype(str)))
+            adicionais = termos_dia[[ (str(r["codigo_seduc"]),str(r["PEC"])) not in chaves_previstas for _,r in termos_dia.iterrows() ]]
+            if not adicionais.empty:
+                visitas_periodo = pd.concat([visitas_periodo, adicionais], ignore_index=True)
     if data_ref in FERIADOS_EEC:
         if not agenda_dia.empty:
             st.warning("30/11/2026: feriado institucional para toda a EEC. Existem registros planejados para essa data; verifique o remanejamento.")
@@ -2500,8 +2578,8 @@ if pagina_gps == "🗺️ Mapa Territorial":
                                  id="intensidade_escolas"))
     camadas.append(pdk.Layer("IconLayer", data=filtrado,
                              get_position="[longitude,latitude]", get_icon="icone",
-                             get_size=37, size_scale=1, size_min_pixels=28,
-                             size_max_pixels=48, billboard=True, pickable=True,
+                             get_size=18.5, size_scale=1, size_min_pixels=14,
+                             size_max_pixels=24, billboard=True, pickable=True,
                              id="escolas"))
     if geojson and rotulos_municipios:
         camadas.append(pdk.Layer(
@@ -2519,11 +2597,17 @@ if pagina_gps == "🗺️ Mapa Territorial":
     if sede_lat is not None and sede_lon is not None:
         try:
             sede = pd.DataFrame([{"latitude":float(sede_lat),"longitude":float(sede_lon),"escola":"SEDE URE MIRACATU", "municipio":"Sede regional", "codigo_seduc":"URE", "agenda_hoje":"Sede administrativa"}])
-            camadas.append(pdk.Layer("ScatterplotLayer",data=sede,get_position="[longitude,latitude]",get_fill_color=[25,25,25,255],
-                                     get_line_color=[255,255,255],line_width_min_pixels=3,get_radius=1800,radius_min_pixels=14,radius_max_pixels=23,pickable=False))
+            # A sede mantém o tamanho original dos pinos das escolas (37 px),
+            # mas usa dourado exclusivo, não utilizado por nenhum município.
+            sede["icone"] = [gps_icone_escola([245, 184, 39])]
+            camadas.append(pdk.Layer("IconLayer", data=sede,
+                                     get_position="[longitude,latitude]", get_icon="icone",
+                                     get_size=37, size_scale=1, size_min_pixels=28,
+                                     size_max_pixels=48, billboard=True, pickable=True,
+                                     id="sede_ure"))
         except (TypeError,ValueError):
             st.warning("Coordenadas da sede da URE inválidas em Secrets.")
-    tooltip = {"html":"<b>{escola}</b><br/>Município: {municipio}<br/>SEDUC: {codigo_seduc}<br/>Endereço: {endereco}<br/><b>Registros no período:</b> {quantidade_visitas}<br/><b>Detalhes:</b> {agenda_hoje}<br/><small>Clique para abrir a ficha</small>",
+    tooltip = {"html":"<b>{escola}</b><br/>Município: {municipio}<br/>SEDUC: {codigo_seduc}<br/><b>Visitas na data:</b> {quantidade_visitas}<br/><b>PEC / atividade / objetivo:</b> {agenda_hoje}<br/><small>Selecione a escola abaixo do mapa para abrir a ficha</small>",
                "style":{"backgroundColor":"#17313d","color":"white","fontSize":"13px","maxWidth":"430px"}}
     vista = pdk.ViewState(latitude=float(filtrado.latitude.mean()),longitude=float(filtrado.longitude.mean()),zoom=9 if municipio=="Todos" else 11)
     evento = st.pydeck_chart(pdk.Deck(layers=camadas,initial_view_state=vista,tooltip=tooltip,map_style=None),
@@ -2535,6 +2619,41 @@ if pagina_gps == "🗺️ Mapa Territorial":
             selecionado = str(selecoes[0].get("codigo_seduc",""))
     except (AttributeError,TypeError,KeyError,IndexError):
         pass
+    # Alternativa acessível ao clique: seleção explícita por escola, confiável
+    # em navegadores que não propagam eventos de IconLayer ao Streamlit.
+    opcoes_escolas = {str(r["codigo_seduc"]): f'{r["escola"]} — {r["municipio"]} (SEDUC {r["codigo_seduc"]})'
+                      for _,r in filtrado.sort_values("escola").iterrows()}
+    codigos_opcoes = [""] + list(opcoes_escolas)
+    codigo_escolhido = st.selectbox(
+        "🏫 Abrir ficha da escola (alternativa ao clique no pino)",
+        options=codigos_opcoes,
+        format_func=lambda c: opcoes_escolas.get(c, "Selecione uma escola"),
+        key="gps_mapa_escola_ficha")
+    if codigo_escolhido:
+        selecionado = codigo_escolhido
+    st.subheader(f"📅 Visitas e atividades — {data_ref.strftime('%d/%m/%Y')}")
+    if visitas_periodo.empty:
+        st.info("Nenhuma visita encontrada para esta data nos documentos atualmente carregados. Isso não comprova ausência de atividade.")
+    else:
+        linhas_visitas = visitas_periodo.copy()
+        if municipio != "Todos":
+            codigos_municipio = set(filtrado["codigo_seduc"].astype(str))
+            linhas_visitas = linhas_visitas[linhas_visitas["codigo_seduc"].astype(str).isin(codigos_municipio)]
+        if busca.strip():
+            codigos_busca = set(filtrado["codigo_seduc"].astype(str))
+            linhas_visitas = linhas_visitas[linhas_visitas["codigo_seduc"].astype(str).isin(codigos_busca)]
+        nomes_escolas = cadastro.set_index("codigo_seduc")["escola"].to_dict()
+        linhas_visitas.insert(0, "Escola", linhas_visitas["codigo_seduc"].astype(str).map(nomes_escolas))
+        campos_visitas = [c for c in ["Escola","PEC","Data","Horário","Atividade","Objetivo","Situação","Fonte"] if c in linhas_visitas.columns]
+        st.dataframe(linhas_visitas[campos_visitas], use_container_width=True, hide_index=True)
+        st.caption("Fonte: programação disponível e termos identificados. Dados incompletos não devem ser interpretados como ausência de visita.")
+    if selecionado and selecionado in set(cadastro["codigo_seduc"].astype(str)):
+        st.session_state["gps_escola_selecionada"] = selecionado
+    codigo_ficha = st.session_state.get("gps_escola_selecionada")
+    if codigo_ficha and codigo_ficha in set(cadastro["codigo_seduc"].astype(str)):
+        escola_ficha = cadastro[cadastro["codigo_seduc"].astype(str)==codigo_ficha].iloc[0]
+        st.divider()
+        gps_ficha_escola(escola_ficha, agenda, df_termos_drive, data_ref)
     with st.expander("📋 Conferência histórica: Plano × Termo × Justificativa", expanded=False):
         if agenda.empty:
             st.info("Nenhuma programação datada disponível para conferência.")
@@ -2553,9 +2672,7 @@ if pagina_gps == "🗺️ Mapa Territorial":
     if destino_gps != "Cadastro das Unidades":
         st.caption("Passe o mouse para ver os registros do período; clique no marcador para abrir a ficha. Mapa passado = termos documentados; presente/futuro = programação, sem rastreamento físico.")
     codigo_atual = st.session_state.get("gps_escola_selecionada")
-    if codigo_atual and codigo_atual in set(cadastro["codigo_seduc"]):
-        with st.container(border=True):
-            gps_ficha_escola(cadastro[cadastro["codigo_seduc"]==codigo_atual].iloc[0],agenda,df_termos_drive)
+    # Ficha da data selecionada já exibida imediatamente abaixo do mapa.
     if destino_gps in ("Rotas e Distâncias", "Cobertura Territorial"):
         st.info("Distâncias rodoviárias e cobertura por visitas confirmadas exigem dados de rota e termos validados. Nenhuma estimativa fictícia será apresentada.")
     st.stop()
