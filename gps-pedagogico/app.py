@@ -1968,6 +1968,48 @@ df_ind_global, df_curs_global, df_atpc_drive, df_planos_drive, df_termos_drive, 
     if "COLE_AQUI" not in GOOGLE_DRIVE_API_KEY else (pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), 0)
 )
 
+# Frequência local: disponibiliza os dados oficiais também nas telas de indicadores,
+# independentemente da autenticação do Google Drive.
+@st.cache_data(ttl=300, show_spinner=False)
+def gps_frequencia_local():
+    raiz = pathlib.Path(__file__).resolve().parent
+    arq_freq = raiz / "GPS_frequencia_escolas_2026.csv"
+    arq_cad = raiz / "GPS_cadastro_40_unidades.csv"
+    if not arq_freq.exists() or not arq_cad.exists():
+        return pd.DataFrame()
+    try:
+        freq = pd.read_csv(arq_freq, dtype={"codigo_seduc": str}, encoding="utf-8-sig")
+        cad = pd.read_csv(arq_cad, dtype={"codigo_seduc": str}, encoding="utf-8-sig")
+        freq["codigo_seduc"] = freq["codigo_seduc"].astype(str).str.strip()
+        cad["codigo_seduc"] = cad["codigo_seduc"].astype(str).str.strip()
+        dados = freq.merge(cad[["codigo_seduc", "escola"]].drop_duplicates("codigo_seduc"), on="codigo_seduc", how="inner")
+        dados["frequencia_pct"] = pd.to_numeric(dados["frequencia_pct"], errors="coerce")
+        dados = dados[dados["frequencia_pct"].between(0, 100)].drop_duplicates("codigo_seduc", keep="last")
+        return pd.DataFrame({
+            "Tipo_Indicador": "FREQUENCIA", "Subcategoria": "Frequência Escolar",
+            "Periodo": "Consolidado 2026 (arquivo local)", "Nivel_Granularidade": "ESCOLA",
+            "Escola": dados["escola"].values, "Turma": "Consolidado da Escola",
+            "Estudante": "Consolidado Escola", "Professor": "", "Recomposicao": "",
+            "Componente": "Frequência", "Proficiencia_Pct": dados["frequencia_pct"].values,
+            "Participacao_Pct": float("nan"), "Nivel": "",
+        })
+    except (OSError, ValueError, KeyError, pd.errors.ParserError) as exc:
+        st.warning(f"Não foi possível carregar a frequência local: {exc}")
+        return pd.DataFrame()
+
+freq_local_gps = gps_frequencia_local()
+if not freq_local_gps.empty:
+    if df_ind_global.empty:
+        df_ind_global = freq_local_gps
+    else:
+        # O Drive tem precedência se trouxer frequência real; evita duplicidade.
+        codigos_existentes = set()
+        drive_freq = df_ind_global[df_ind_global["Tipo_Indicador"] == "FREQUENCIA"]
+        nomes_drive = set(drive_freq["Escola"].astype(str).map(normalizar_texto))
+        locais_novos = freq_local_gps[~freq_local_gps["Escola"].astype(str).map(normalizar_texto).isin(nomes_drive)]
+        if not locais_novos.empty:
+            df_ind_global = pd.concat([df_ind_global, locais_novos], ignore_index=True)
+
 # Consolida base de ATPC (Sheets + Drive + Upload na sessão)
 dfs_atpc_lista = [d for d in [df_atpc_sheets, df_atpc_drive] if not d.empty]
 df_atpc_global = pd.concat(dfs_atpc_lista, ignore_index=True).drop_duplicates() if dfs_atpc_lista else pd.DataFrame()
@@ -2017,7 +2059,6 @@ with st.sidebar:
                 if st.button(item, key=f"gps_menu_{titulo_grupo}_{item}", use_container_width=True,
                              type="primary" if st.session_state["gps_destino"] == item else "secondary"):
                     st.session_state["gps_destino"] = item
-                    st.rerun()
     destino_gps = st.session_state["gps_destino"]
     pagina_gps = ("🗺️ Mapa Territorial" if destino_gps in grupos_gps["🗺️ Mapa Territorial"] else
                   "📁 Fontes de Dados" if destino_gps == "Administração — Fontes de Dados" else
@@ -2713,15 +2754,25 @@ if pagina_gps == "🗺️ Mapa Territorial":
                                  radius_max_pixels=29, stroked=False, pickable=False,
                                  id="intensidade_escolas"))
     if geojson and rotulos_municipios:
-        # Rótulos abaixo dos pinos: nenhum nome pode cobrir um marcador escolar.
+        # Ícones SVG transparentes garantem rótulos visíveis no deck.gl/Streamlit.
+        # Mantidos abaixo dos marcadores, sem interceptar cliques.
+        def _gps_icone_nome_municipio(nome):
+            from html import escape as _escape_xml
+            texto = _escape_xml(str(nome).upper())
+            svg = ('<svg xmlns="http://www.w3.org/2000/svg" width="360" height="48" viewBox="0 0 360 48">'
+                   '<text x="180" y="31" text-anchor="middle" '
+                   'font-family="Arial,Helvetica,sans-serif" font-size="24" '
+                   'font-weight="900" fill="#000000">' + texto + '</text></svg>')
+            return {"url": "data:image/svg+xml;charset=utf-8," + gps_url_quote(svg, safe=''),
+                    "width": 360, "height": 48, "anchorX": 180, "anchorY": 24}
+        for rotulo in rotulos_municipios:
+            rotulo["icone_nome"] = _gps_icone_nome_municipio(rotulo["nome"])
         camadas.append(pdk.Layer(
-            "TextLayer", data=rotulos_municipios,
-            get_position="[longitude, latitude]", get_text="nome",
-            get_size=18, size_units="pixels", size_min_pixels=15, size_max_pixels=21,
-            get_color=[0, 0, 0, 255], get_text_anchor="middle",
-            get_alignment_baseline="center", font_family="Arial, sans-serif",
-            font_weight=900, background=False,
-            billboard=True, pickable=False, id="nomes_municipios"
+            "IconLayer", data=rotulos_municipios,
+            get_position="[longitude, latitude]", get_icon="icone_nome",
+            get_size=240, size_scale=1, size_min_pixels=150,
+            size_max_pixels=270, billboard=True, pickable=False,
+            id="nomes_municipios"
         ))
     camadas.append(pdk.Layer("IconLayer", data=filtrado,
                              get_position="[longitude,latitude]", get_icon="icone",
@@ -2779,6 +2830,21 @@ if pagina_gps == "🗺️ Mapa Territorial":
             "Município: Miracatu/SP<br/>Telefone: (13) 3847-7050<br/>"
             "E-mail: <a href='mailto:mir@educacao.sp.gov.br' style='color:#ffffff;text-decoration:underline'>"
             "mir@educacao.sp.gov.br</a>")
+    # IMPORTANTE: pydeck serializa os dados da camada ao criá-la.
+    # Os cartões foram preenchidos depois da criação inicial dos IconLayers;
+    # recriá-los agora evita que o tooltip exiba literalmente {conteudo_popup}.
+    camadas = [camada for camada in camadas if getattr(camada, "id", None) not in ("escolas", "sede_ure")]
+    camadas.append(pdk.Layer("IconLayer", data=filtrado,
+                             get_position="[longitude,latitude]", get_icon="icone",
+                             get_size=18.5, size_scale=1, size_min_pixels=14,
+                             size_max_pixels=24, billboard=True, pickable=True,
+                             id="escolas"))
+    if 'sede' in locals() and not sede.empty:
+        camadas.append(pdk.Layer("IconLayer", data=sede,
+                                 get_position="[longitude,latitude]", get_icon="icone",
+                                 get_size=37, size_scale=1, size_min_pixels=28,
+                                 size_max_pixels=48, billboard=True, pickable=True,
+                                 id="sede_ure"))
     tooltip = {"html":"{conteudo_popup}",
                "style":{"backgroundColor":"#17313d","color":"white","fontSize":"13px","maxWidth":"430px"}}
     vista = pdk.ViewState(latitude=float(filtrado.latitude.mean()),longitude=float(filtrado.longitude.mean()),zoom=9 if municipio=="Todos" else 11)
@@ -3411,7 +3477,7 @@ def gps_filtrar_tipo_escola(df_indicadores, chave_filtro):
 
 def exibir_banner_perfil_indicadores():
     if eh_cec_ou_at:
-        st.caption(f"📂 {qtd_arqs_drive} arquivo(s) sincronizado(s) do Google Drive — Visão Global da URE Miracatu.")
+        st.caption(f"📂 {qtd_arqs_drive} arquivo(s) sincronizado(s) do Google Drive — Visão Global da URE Miracatu." + (" Frequência escolar também disponível na base local." if not freq_local_gps.empty else ""))
     elif eh_pec_qualidade:
         if escolas_usuario:
             st.info(f"🏫 **Carteira Qualidade da Aula (Google Sheets):** {', '.join(escolas_usuario)} — Exibindo exclusivamente suas escolas de acompanhamento com **todas as plataformas digitais** disponíveis.")
@@ -3486,52 +3552,72 @@ if destino_gps in ("SARESP", "Prova Paulista", "SAEB", "Avaliação Diagnóstica
 
     renderizar_tabela_hierarquica(df_av_filt, f"{tipo_prova} — {periodo_filtro}", "Proficiência Média (%)")
 
-# --- ABA 3: PLATAFORMAS DIGITAIS (COM SUBPASTAS DINÂMICAS) ---
+# --- ABA 3: PLATAFORMAS DIGITAIS (ESCOLA → TURMA) ---
 if destino_gps in ("Tarefa SP", "Leia SP", "Redação Paulista", "Matific Anos Finais", "Khan Academy", "Speak", "Open English", "Elefante Letrado", "Matific Anos Iniciais", "Alura", "Robótica", "Programação"):
-    st.subheader(f"💻 Plataformas Digitais — {pasta_atual} ({comp_atual})")
+    st.subheader(f"💻 {destino_gps} — {pasta_atual} ({comp_atual})")
     exibir_banner_perfil_indicadores()
 
-    df_pl = df_ind_usuario[df_ind_usuario["Tipo_Indicador"] == "PLATAFORMA"] if not df_ind_usuario.empty else pd.DataFrame()
+    df_pl = df_ind_usuario[df_ind_usuario["Tipo_Indicador"] == "PLATAFORMA"].copy() if not df_ind_usuario.empty else pd.DataFrame()
     df_pl = gps_filtrar_tipo_escola(df_pl, "gps_tipo_escola_plataformas")
-    subs_pl_drive = sorted([s for s in df_pl["Subcategoria"].dropna().unique().tolist() if s != "Outras Plataformas"]) if not df_pl.empty else []
 
-    if eh_cec_ou_at or eh_pec_qualidade:
-        lista_base_plats = ["Khan Academy", "Matific", "Speak", "Open English", "Leia SP", "Redação Paulista", "Alura"]
-        todas_plats_menu = list(dict.fromkeys(subs_pl_drive + lista_base_plats))
-    else:
-        todas_plats_menu = subs_pl_drive
+    # O menu lateral já define a plataforma. Não repetir essa escolha no painel.
+    # Mantém compatibilidade com nomes de subpastas usados nas planilhas.
+    equivalencias_plataforma = {
+        "Matific Anos Finais": ["Matific Anos Finais", "Matific"],
+        "Matific Anos Iniciais": ["Matific Anos Iniciais", "Matific"],
+    }
+    nomes_plataforma = equivalencias_plataforma.get(destino_gps, [destino_gps])
+    if not df_pl.empty:
+        df_pl = df_pl[df_pl["Subcategoria"].fillna("").map(normalizar_texto).isin(
+            {normalizar_texto(nome) for nome in nomes_plataforma}
+        )].copy()
 
-    if not todas_plats_menu:
-        st.info("Nenhuma plataforma digital vinculada ou carregada nas subpastas do Drive para o seu perfil atual.")
-    else:
-        opcoes_plats = ["Todas as Plataformas"] + todas_plats_menu
-        plat_escolhida = st.selectbox("Selecione a Plataforma Digital (Subpasta):", opcoes_plats, key="sel_subpasta_plataforma")
+    # Escolas com dados da plataforma são a fonte preferencial. Se a plataforma
+    # ainda não foi sincronizada, mostrar o cadastro, sem inventar resultados.
+    escolas_disponiveis = sorted(df_pl["Escola"].dropna().astype(str).unique().tolist()) if not df_pl.empty else []
+    if not escolas_disponiveis:
+        from pathlib import Path
+        cadastro_path = Path(__file__).resolve().parent / "GPS_cadastro_40_unidades.csv"
+        if cadastro_path.exists():
+            try:
+                cadastro_pl = pd.read_csv(cadastro_path, dtype=str, encoding="utf-8-sig").fillna("")
+                if st.session_state.get("gps_tipo_escola_plataformas", "Todas") == "Regulares":
+                    cadastro_pl = cadastro_pl[cadastro_pl["tipo"].map(normalizar_texto) == "EE"]
+                escolas_disponiveis = sorted(cadastro_pl["escola"].loc[lambda x: x.str.strip() != ""].unique().tolist())
+                # Para os perfis com carteira escolar, não expor escolas fora dela.
+                if not eh_cec_ou_at and escolas_usuario:
+                    carteira = {normalizar_texto(e) for e in escolas_usuario}
+                    escolas_disponiveis = [e for e in escolas_disponiveis if normalizar_texto(e) in carteira]
+            except Exception as exc:
+                st.warning(f"Não foi possível carregar o cadastro de escolas: {exc}")
 
-        # Quando "Todas as Plataformas" está selecionado, exibe quadro comparativo entre todas as plataformas por escola
-        if plat_escolhida == "Todas as Plataformas" and not df_pl.empty and len(subs_pl_drive) >= 1:
-            st.markdown("#### 📊 Quadro Comparativo por Plataforma Digital (Engajamento / Uso %)")
-            df_pl_esc = df_pl[df_pl["Nivel_Granularidade"] == "ESCOLA"]
-            if df_pl_esc.empty:
-                df_pl_esc = df_pl
-            piv_plats = df_pl_esc.pivot_table(
-                index="Escola",
-                columns="Subcategoria",
-                values="Proficiencia_Pct",
-                aggfunc="mean"
-            ).round(1)
-            piv_plats["Média Geral Plataformas (%)"] = piv_plats.mean(axis=1).round(1)
-            cols_p_ord = ["Média Geral Plataformas (%)"] + [c for c in piv_plats.columns if c != "Média Geral Plataformas (%)"]
-            piv_plats = piv_plats[cols_p_ord].sort_values(by="Média Geral Plataformas (%)", ascending=True).reset_index()
-            cols_num_p = [c for c in piv_plats.columns if c != "Escola"]
-            styler_p = piv_plats.style.map(estilo_celula_farol, subset=cols_num_p).format({c: "{:.1f}%" for c in cols_num_p}, na_rep="-")
-            st.dataframe(styler_p, use_container_width=True, hide_index=True)
-            st.markdown("---")
-
-        df_pl_filt = df_pl.copy()
-        if not df_pl_filt.empty and plat_escolhida != "Todas as Plataformas":
-            df_pl_filt = df_pl_filt[df_pl_filt["Subcategoria"] == plat_escolhida]
-
-        renderizar_tabela_hierarquica(df_pl_filt, f"Plataforma — {plat_escolhida}", "Engajamento / Uso (%)")
+    escola_sel = st.selectbox(
+        "Selecione a escola:", ["Selecione uma escola..."] + escolas_disponiveis,
+        key=f"gps_pl_escola_{destino_gps}"
+    )
+    if escola_sel != "Selecione uma escola...":
+        df_escola_pl = df_pl[df_pl["Escola"] == escola_sel].copy() if not df_pl.empty else pd.DataFrame()
+        turmas_pl = sorted({str(t).strip() for t in df_escola_pl.get("Turma", pd.Series(dtype=str)).dropna()
+                            if str(t).strip() and normalizar_texto(t) not in ("CONSOLIDADO", "GERAL", "NAN")})
+        turma_sel = st.selectbox(
+            "Selecione a turma:", ["Todas as turmas"] + turmas_pl,
+            key=f"gps_pl_turma_{destino_gps}_{escola_sel}"
+        )
+        if not df_escola_pl.empty:
+            if turma_sel != "Todas as turmas":
+                df_escola_pl = df_escola_pl[df_escola_pl["Turma"].astype(str) == turma_sel]
+            if not df_escola_pl.empty:
+                st.markdown(f"#### Resultados — {destino_gps} | {escola_sel}" +
+                            (f" | {turma_sel}" if turma_sel != "Todas as turmas" else ""))
+                colunas_visiveis = [c for c in ["Escola", "Turma", "Componente", "Periodo", "Proficiencia_Pct", "Nivel_Granularidade"]
+                                    if c in df_escola_pl.columns]
+                st.dataframe(df_escola_pl[colunas_visiveis], use_container_width=True, hide_index=True)
+            else:
+                st.info("Não há resultados disponíveis para esta turma na plataforma selecionada.")
+        else:
+            st.info(f"Ainda não há resultados sincronizados de {destino_gps} para {escola_sel}.")
+        if not turmas_pl:
+            st.caption("As turmas aparecerão automaticamente quando houver dados detalhados desta escola e plataforma.")
 
 # --- ABA 4: FREQUÊNCIA ESCOLAR (COM SUBPASTAS / PERÍODOS DINÂMICOS) ---
 if destino_gps in ("Geral URE", "Escolas", "Turmas"):
@@ -3547,6 +3633,8 @@ if destino_gps in ("Geral URE", "Escolas", "Turmas"):
     if not df_fr_filt.empty and per_fr_sel != "Todos os Períodos":
         df_fr_filt = df_fr_filt[df_fr_filt["Periodo"] == per_fr_sel]
 
+    if destino_gps == "Turmas" and not df_fr_filt.empty and not df_fr_filt["Nivel_Granularidade"].isin(["TURMA", "ESTUDANTE"]).any():
+        st.info("A base local contém frequência por escola. Os resultados por turma serão exibidos quando as planilhas detalhadas forem integradas.")
     renderizar_tabela_hierarquica(df_fr_filt, f"Frequência Escolar ({per_fr_sel})", "Frequência Média (%)")
 
 # ==============================================================================
