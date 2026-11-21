@@ -2500,7 +2500,43 @@ def gps_ficha_escola(registro, agenda, termos, data_referencia=None, cadastro=No
                 cartao("🏫 Matrículas ativas", f"{int(_matriculas_ficha):,}".replace(",", "."), "Base consolidada de frequência escolar 2026", "blue")
             else:
                 cartao("🏫 Matrículas ativas", "—", "Sem dados de matrícula para esta escola", "blue")
-            st.info("A quantidade e a relação de turmas ainda não constam da base consolidada integrada ao GPS.")
+            # Detalhamento oficial por turma, quando disponibilizado no repositório.
+            @st.cache_data(ttl=300, show_spinner=False)
+            def _gps_matriculas_por_turma():
+                arquivo = pathlib.Path(__file__).resolve().parent / "GPS_matriculas_turmas_2026.csv"
+                if not arquivo.is_file():
+                    return pd.DataFrame()
+                try:
+                    base = pd.read_csv(arquivo, dtype={"codigo_seduc": str}, encoding="utf-8-sig")
+                    campos = {"codigo_seduc", "turma", "segmento", "matriculas_ativas"}
+                    if not campos.issubset(base.columns):
+                        return pd.DataFrame()
+                    base["codigo_seduc"] = base["codigo_seduc"].str.strip()
+                    base["matriculas_ativas"] = pd.to_numeric(base["matriculas_ativas"], errors="coerce")
+                    return base.dropna(subset=["matriculas_ativas"])
+                except (OSError, ValueError, pd.errors.ParserError):
+                    return pd.DataFrame()
+            _turmas_escola = _gps_matriculas_por_turma()
+            if not _turmas_escola.empty:
+                _turmas_escola = _turmas_escola[_turmas_escola["codigo_seduc"] == str(codigo).strip()].copy()
+            if _turmas_escola.empty:
+                st.info("Detalhamento por segmento e turma ainda não disponível para esta escola.")
+            else:
+                _segmentos = _turmas_escola.groupby("segmento")["matriculas_ativas"].sum()
+                c1, c2 = st.columns(2)
+                with c1:
+                    cartao("📘 Ensino Fundamental", int(_segmentos.get("Ensino Fundamental", 0)), "Matrículas nas turmas identificadas", "teal")
+                with c2:
+                    cartao("📗 Ensino Médio", int(_segmentos.get("Ensino Médio", 0)), "Matrículas nas turmas identificadas", "green")
+                if _segmentos.get("Não classificado", 0):
+                    st.caption(f"Outras turmas sem segmento identificado: {int(_segmentos['Não classificado'])} matrículas.")
+                _soma = int(_turmas_escola["matriculas_ativas"].sum())
+                if _matriculas_ficha is not None and _soma != int(_matriculas_ficha):
+                    st.caption(f"Atenção: soma das turmas ({_soma}) diferente do consolidado ({int(_matriculas_ficha)}). Fontes ou datas de referência podem diferir.")
+                st.markdown("**Matrículas por turma**")
+                _tabela = _turmas_escola[["segmento", "turma", "matriculas_ativas"]].copy()
+                _tabela.columns = ["Segmento", "Turma", "Matrículas ativas"]
+                st.dataframe(_tabela.sort_values(["Segmento", "Turma"]), hide_index=True, use_container_width=True)
         else:
             cartao("🏫 " + subitem, "—", "Informações aguardando fonte oficial específica", "blue")
 
@@ -3073,7 +3109,35 @@ if pagina_gps == "🗺️ Mapa Territorial":
     filtrado["gps_nome"] = filtrado["escola"].map(lambda x: _gps_escape(str(x)))
     filtrado["gps_municipio"] = filtrado["municipio"].map(lambda x: _gps_escape(str(x)))
     filtrado["gps_seduc"] = filtrado["codigo_seduc"].map(lambda x: _gps_escape(str(x)))
-    filtrado["gps_visitas"] = filtrado["quantidade_visitas"].map(lambda x: str(int(x)))
+    # Metas oficiais de Bonificação por Resultados 2026–2027, por código SEDUC.
+    metas_path = pathlib.Path(__file__).resolve().parent / "GPS_metas_bonificacao_2026_2027.csv"
+    metas_por_codigo = {}
+    if metas_path.exists():
+        try:
+            metas_df = pd.read_csv(metas_path, sep=",", dtype=str, keep_default_na=False, encoding="utf-8-sig")
+            metas_por_codigo = metas_df.set_index("codigo_seduc").to_dict("index")
+        except Exception as exc:
+            st.warning(f"Não foi possível carregar as metas oficiais: {exc}")
+    filtrado["gps_meta_ouro"] = filtrado["codigo_seduc"].astype(str).map(
+        lambda c: _gps_escape(metas_por_codigo.get(c, {}).get("meta_ouro", "—") or "—"))
+    filtrado["gps_meta_ifa"] = filtrado["codigo_seduc"].astype(str).map(
+        lambda c: _gps_escape(metas_por_codigo.get(c, {}).get("ifa", "—") or "—"))
+    # Visita contabilizada no dia agendado, ainda que o termo esteja pendente.
+    # Justificativa formal de não realização retira apenas a visita correspondente.
+    contagem_visitas_cartao = {}
+    if data_ref <= date.today() and not visitas_periodo.empty:
+        for _, visita in visitas_periodo.iterrows():
+            cod = str(visita.get("codigo_seduc", ""))
+            dia_visita = gps_data_segura(visita.get("Data"))
+            if dia_visita is None or dia_visita > date.today():
+                continue
+            situacao, _ = _gps_status_visita(visita.get("PEC", ""), cod, dia_visita)
+            if situacao == "Não realizada — justificada":
+                continue
+            chave = (gps_chave_pec(visita.get("PEC", "")), cod, dia_visita)
+            contagem_visitas_cartao.setdefault(cod, set()).add(chave)
+    filtrado["gps_visitas"] = filtrado["codigo_seduc"].astype(str).map(
+        lambda c: str(len(contagem_visitas_cartao.get(c, set()))))
     filtrado["gps_data"] = data_ref.strftime("%d/%m/%Y")
     filtrado["gps_frequencia"] = filtrado["frequencia_pct"].map(_gps_pct)
     filtrado["gps_prova"] = "—"
@@ -3089,6 +3153,8 @@ if pagina_gps == "🗺️ Mapa Territorial":
             status_por_escola.setdefault(cod, set()).add(status)
     filtrado["gps_status"] = filtrado["codigo_seduc"].astype(str).map(
         lambda cod: " / ".join(sorted(status_por_escola.get(cod, []))) or "Sem visita agendada")
+    filtrado["gps_estilo_visita"] = ""
+    filtrado["gps_contato_ure"] = ""
     filtrado["gps_pec"] = "Não informado"
     filtrado["gps_atividade"] = "Nenhuma visita registrada na data"
     filtrado["gps_objetivo"] = "—"
@@ -3122,18 +3188,27 @@ if pagina_gps == "🗺️ Mapa Territorial":
 
     tooltip_html = """
     <div style="width:min(430px,calc(100vw - 46px));font-family:Arial,sans-serif;color:#fff;box-sizing:border-box;line-height:1.25;">
-      <div style="font-size:16px;font-weight:800;line-height:1.12;margin:0 0 3px;">{gps_nome}</div>
-      <div style="font-size:11px;color:#e1eef3;margin-bottom:6px;">{gps_municipio} · SEDUC {gps_seduc}</div>
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:6px;margin-bottom:5px;">
+        <div style="flex:1;min-width:0;">
+          <div style="font-size:16px;font-weight:800;line-height:1.12;margin:0 0 3px;">{gps_nome}</div>
+          <div style="font-size:11px;color:#e1eef3;">{gps_municipio} · SEDUC {gps_seduc}</div>
+        </div>
+        <div style="flex:0 0 auto;background:#31505c;border-radius:5px;padding:4px 6px;text-align:right;white-space:nowrap;">
+          <div style="font-size:10px;font-weight:800;color:#fff;">🎯 METAS SARESP</div>
+          <div style="font-size:11px;color:#fff;"><b>Ouro:</b> {gps_meta_ouro} &nbsp; <b>IFA:</b> {gps_meta_ifa}</div>
+        </div>
+      </div>
       <div style="display:flex;gap:9px;align-items:flex-start;">
         <div style="flex:1 1 48%;min-width:0;font-size:12px;overflow-wrap:anywhere;">
-          <div style="display:flex;justify-content:space-between;gap:4px;align-items:center;margin-bottom:4px;">
+          {gps_contato_ure}
+          <div style="{gps_estilo_visita}display:flex;justify-content:space-between;gap:4px;align-items:center;margin-bottom:4px;">
             <b>Visitas: {gps_visitas}</b>
             <span style="background:#36505d;border-radius:9px;padding:2px 4px;font-size:10px;white-space:nowrap;">{gps_data}</span>
           </div>
-          <div style="margin-bottom:3px;"><b>Status:</b> {gps_status}</div>
-          <div style="margin-bottom:3px;"><b>PEC:</b> {gps_pec}</div>
-          <div style="margin-bottom:3px;"><b>Atividade:</b> {gps_atividade}</div>
-          <div><b>Objetivo:</b> {gps_objetivo}</div>
+          <div style="{gps_estilo_visita}margin-bottom:3px;"><b>Status:</b> {gps_status}</div>
+          <div style="{gps_estilo_visita}margin-bottom:3px;"><b>PEC:</b> {gps_pec}</div>
+          <div style="{gps_estilo_visita}margin-bottom:3px;"><b>Atividade:</b> {gps_atividade}</div>
+          <div style="{gps_estilo_visita}"><b>Objetivo:</b> {gps_objetivo}</div>
         </div>
         <div style="flex:1 1 52%;min-width:0;">
           <div style="font-size:12px;font-weight:800;margin-bottom:4px;">Raio-X Pedagógico</div>
@@ -3159,6 +3234,13 @@ if pagina_gps == "🗺️ Mapa Territorial":
     # A sede tem dados próprios; placeholders comuns são preenchidos para que
     # a passagem do mouse nunca mostre nomes de campos ou HTML literal.
     if "sede" in locals() and not sede.empty:
+        sede["gps_meta_ouro"] = _gps_escape(metas_por_codigo.get("URE", {}).get("meta_ouro", "—") or "—")
+        sede["gps_meta_ifa"] = _gps_escape(metas_por_codigo.get("URE", {}).get("ifa", "—") or "—")
+        sede["gps_estilo_visita"] = "display:none;"
+        sede["gps_contato_ure"] = ('<div style="margin-bottom:7px;"><b>Telefone:</b> '
+            '<a href="tel:+551338477050" style="color:#a7e3ff;">(13) 3847-7050</a></div>'
+            '<div><b>E-mail:</b> <a href="mailto:mir@educacao.sp.gov.br" '
+            'style="color:#a7e3ff;">mir@educacao.sp.gov.br</a></div>')
         sede["gps_nome"] = "UNIDADE REGIONAL DE ENSINO DE MIRACATU"
         sede["gps_municipio"] = "Miracatu/SP"
         sede["gps_seduc"] = "URE"
