@@ -2979,39 +2979,39 @@ if pagina_gps == "🗺️ Mapa Territorial":
     # O tooltip utiliza um único template HTML estático. A estrutura do Raio-X
     # segue o modelo aprovado, com quatro cartões coloridos em duas colunas.
     tooltip_html = """
-    <div style="width:420px;max-width:calc(100vw - 36px);font-family:Arial,sans-serif;color:#fff;line-height:1.45;">
-      <div style="font-size:17px;font-weight:750;margin-bottom:4px;">{gps_nome}</div>
-      <div style="font-size:11px;color:#d5e3e8;">Município: {gps_municipio} · SEDUC: {gps_seduc}</div>
-      <div style="border-top:1px solid #44606b;margin:14px 0;"></div>
-      <div style="display:flex;justify-content:space-between;gap:10px;align-items:center;">
+    <div style="width:292px;max-width:calc(100vw - 48px);font-family:Arial,sans-serif;color:#fff;line-height:1.22;">
+      <div style="font-size:19px;font-weight:800;margin-bottom:3px;">{gps_nome}</div>
+      <div style="font-size:14px;color:#e1eef3;font-weight:600;">Município: {gps_municipio} · SEDUC: {gps_seduc}</div>
+      <div style="border-top:1px solid #44606b;margin:6px 0;"></div>
+      <div style="display:flex;justify-content:space-between;gap:5px;align-items:center;font-size:15px;">
         <b>Visitas na data: {gps_visitas}</b>
-        <span style="background:#36505d;border-radius:16px;padding:3px 8px;font-size:11px;">{gps_data}</span>
+        <span style="background:#36505d;border-radius:12px;padding:2px 6px;font-size:13px;white-space:nowrap;">{gps_data}</span>
       </div>
-      <div style="margin-top:10px;font-size:12px;"><b>PEC:</b> {gps_pec}</div>
-      <div style="margin-top:7px;font-size:12px;"><b>Atividade:</b> {gps_atividade}</div>
-      <div style="margin-top:7px;font-size:12px;"><b>Objetivo:</b> {gps_objetivo}</div>
-      <div style="border-top:1px solid #44606b;margin:14px 0;"></div>
-      <div style="font-size:13px;font-weight:700;margin-bottom:9px;">Raio-X Pedagógico</div>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:9px;">
-        <div style="background:#dceffb;color:#174c73;padding:10px;border-radius:9px;min-height:65px;">
-          <div style="font-size:12px;">♧ Frequência</div><div style="font-size:19px;font-weight:700;margin:5px 0;">{gps_frequencia}</div>
-          <div style="font-size:10px;">Farol: sem dados</div>
+      <div style="margin-top:4px;font-size:15px;"><b>PEC:</b> {gps_pec}</div>
+      <div style="margin-top:3px;font-size:14px;"><b>Atividade:</b> {gps_atividade}</div>
+      <div style="margin-top:3px;font-size:14px;"><b>Objetivo:</b> {gps_objetivo}</div>
+      <div style="border-top:1px solid #44606b;margin:6px 0;"></div>
+      <div style="font-size:16px;font-weight:800;margin-bottom:5px;">Raio-X Pedagógico</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:5px;">
+        <div style="background:#dceffb;color:#174c73;padding:6px;border-radius:7px;">
+          <div style="font-size:13px;font-weight:700;">Frequência</div><div style="font-size:20px;font-weight:800;margin:1px 0;">{gps_frequencia}</div>
+          <div style="font-size:11px;">Farol: sem dados</div>
         </div>
-        <div style="background:#ede5fa;color:#60378f;padding:10px;border-radius:9px;min-height:65px;">
-          <div style="font-size:12px;">◇ Prova Paulista</div><div style="font-size:19px;font-weight:700;margin:5px 0;">{gps_prova}</div>
-          <div style="font-size:10px;">Farol: sem dados</div>
+        <div style="background:#ede5fa;color:#60378f;padding:6px;border-radius:7px;">
+          <div style="font-size:13px;font-weight:700;">Prova Paulista</div><div style="font-size:20px;font-weight:800;margin:1px 0;">{gps_prova}</div>
+          <div style="font-size:11px;">Farol: sem dados</div>
         </div>
-        <div style="background:#fff0df;color:#88480f;padding:10px;border-radius:9px;min-height:65px;">
-          <div style="font-size:12px;">▣ Língua Portuguesa</div><div style="font-size:19px;font-weight:700;margin:5px 0;">{gps_lp}</div>
-          <div style="font-size:10px;">Abaixo do Básico</div>
+        <div style="background:#fff0df;color:#88480f;padding:6px;border-radius:7px;">
+          <div style="font-size:13px;font-weight:700;">Língua Portuguesa</div><div style="font-size:20px;font-weight:800;margin:1px 0;">{gps_lp}</div>
+          <div style="font-size:11px;">Abaixo do Básico</div>
         </div>
-        <div style="background:#dff3e9;color:#126443;padding:10px;border-radius:9px;min-height:65px;">
-          <div style="font-size:12px;">▤ Matemática</div><div style="font-size:19px;font-weight:700;margin:5px 0;">{gps_mat}</div>
-          <div style="font-size:10px;">Abaixo do Básico</div>
+        <div style="background:#dff3e9;color:#126443;padding:6px;border-radius:7px;">
+          <div style="font-size:13px;font-weight:700;">Matemática</div><div style="font-size:20px;font-weight:800;margin:1px 0;">{gps_mat}</div>
+          <div style="font-size:11px;">Abaixo do Básico</div>
         </div>
       </div>
-      <div style="border-top:1px solid #44606b;margin:14px 0 11px;"></div>
-      <div style="font-size:12px;color:#d5e3e8;">♧ Distância da URE: {gps_distancia}</div>
+      <div style="border-top:1px solid #44606b;margin:6px 0 5px;"></div>
+      <div style="font-size:14px;color:#e1eef3;"><b>Distância rodoviária da URE:</b> {gps_distancia}</div>
     </div>"""
     # A sede tem dados próprios; placeholders comuns são preenchidos para que
     # a passagem do mouse nunca mostre nomes de campos ou HTML literal.
@@ -3041,7 +3041,9 @@ if pagina_gps == "🗺️ Mapa Territorial":
                                  size_max_pixels=48, billboard=True, pickable=True, id="sede_ure"))
     tooltip = {"html":tooltip_html,
                "style":{"backgroundColor":"#17313d","color":"white","fontSize":"13px",
-                        "maxWidth":"450px","borderRadius":"12px","padding":"13px"}}
+                        "maxWidth":"315px","borderRadius":"12px","padding":"7px",
+                        "maxHeight":"min(72vh, 430px)","overflowY":"auto",
+                        "transform":"translateY(-96%)","transformOrigin":"bottom center"}}
     vista = pdk.ViewState(latitude=float(filtrado.latitude.mean()),longitude=float(filtrado.longitude.mean()),zoom=9 if municipio=="Todos" else 11)
     evento = st.pydeck_chart(pdk.Deck(layers=camadas,initial_view_state=vista,tooltip=tooltip,map_style=None),
                              use_container_width=True,on_select="rerun",selection_mode="single-object",key="gps_mapa_selecao")
