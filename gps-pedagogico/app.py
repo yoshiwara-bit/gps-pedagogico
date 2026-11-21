@@ -22,6 +22,77 @@ import hmac
 import holidays
 from icalendar import Calendar as ICalCalendar
 
+
+# ==============================================================================
+# FAROL SARESP OFICIAL — classificação externa, nunca calculada por acertos
+# ==============================================================================
+FAROL_CORES = {
+    "VERMELHO": ("🔴", "Muita atenção", "A escola avançou bem abaixo do esperado para seu ponto de partida."),
+    "AMARELO": ("🟡", "Atenção", "A escola avançou abaixo do esperado para seu ponto de partida."),
+    "VERDE": ("🟢", "Bom resultado", "A escola avançou acima do esperado para seu ponto de partida."),
+    "AZUL": ("🔵", "Ótimo resultado", "A escola avançou bem acima do esperado para seu ponto de partida."),
+}
+FAROL_ACOES = {
+    "VERMELHO": ["Diagnóstico das aprendizagens e identificação das habilidades mais frágeis.", "Planejamento de recuperação intensiva com metas e intervenções pedagógicas.", "Acompanhamento próximo da URE, direção, coordenação e professores.", "Monitoramento dos resultados e replanejamento das ações."],
+    "AMARELO": ["Revisar habilidades não consolidadas e ajustar o planejamento.", "Definir metas de curto prazo por turma e componente.", "Apoio pontual da URE e acompanhamento das intervenções."],
+    "VERDE": ["Identificar e sustentar as práticas que deram certo.", "Registrar evidências e acompanhar a consolidação das aprendizagens.", "Compartilhar práticas com outras escolas."],
+    "AZUL": ["Sistematizar práticas exitosas.", "Socializar estratégias e apoiar a formação entre pares.", "Manter o acompanhamento dos resultados."],
+}
+
+@st.cache_data(ttl=300, show_spinner=False)
+def gps_carregar_farol_oficial():
+    """CSV publicado pela SEDUC: codigo_seduc,farol_saresp[,periodo,etapa,fonte].
+    Nunca deduz cor de frequência, nota, média ou percentual de acertos.
+    """
+    arq = pathlib.Path(__file__).resolve().parent / "GPS_farol_saresp_oficial.csv"
+    if not arq.exists():
+        return pd.DataFrame(columns=["codigo_seduc", "farol_saresp"])
+    try:
+        df = pd.read_csv(arq, sep=None, engine="python", dtype=str, encoding="utf-8-sig").fillna("")
+        df.columns = [normalizar_texto(c).lower().replace(" ", "_") for c in df.columns]
+        aliases = {"codigo_escola":"codigo_seduc", "cd_escola":"codigo_seduc", "cor":"farol_saresp", "farol":"farol_saresp", "classificacao":"farol_saresp"}
+        df = df.rename(columns={k:v for k,v in aliases.items() if k in df.columns and v not in df.columns})
+        if not {"codigo_seduc", "farol_saresp"}.issubset(df.columns):
+            return pd.DataFrame(columns=["codigo_seduc", "farol_saresp"])
+        df["codigo_seduc"] = df["codigo_seduc"].astype(str).str.replace(r"\.0$", "", regex=True).str.strip()
+        df["farol_saresp"] = df["farol_saresp"].map(normalizar_texto)
+        df = df[df["farol_saresp"].isin(FAROL_CORES)]
+        # Se há mais de uma etapa e nenhuma classificação consolidada, não escolher arbitrariamente.
+        if "etapa" in df.columns:
+            consol = df["etapa"].map(lambda x: "CONSOLID" in normalizar_texto(x))
+            codigos_consol = set(df.loc[consol, "codigo_seduc"])
+            df = df[consol | ~df["codigo_seduc"].isin(codigos_consol)]
+        df = df.drop_duplicates("codigo_seduc", keep=False)
+        return df
+    except (OSError, ValueError, pd.errors.ParserError):
+        return pd.DataFrame(columns=["codigo_seduc", "farol_saresp"])
+
+def gps_cor_farol(codigo):
+    base = gps_carregar_farol_oficial()
+    if base.empty:
+        return None
+    achado = base.loc[base["codigo_seduc"] == str(codigo).strip(), "farol_saresp"]
+    return str(achado.iloc[0]) if not achado.empty else None
+
+def gps_painel_farol_escola(codigo):
+    from html import escape
+    cor = gps_cor_farol(codigo)
+    if not cor:
+        st.info("Farol SARESP: classificação oficial ainda não carregada para esta escola.")
+        return
+    emoji, titulo, descricao = FAROL_CORES[cor]
+    fundo = {"VERMELHO":"#fff0f0", "AMARELO":"#fff7e5", "VERDE":"#eaf7ed", "AZUL":"#eaf3ff"}[cor]
+    tinta = {"VERMELHO":"#ad1820", "AMARELO":"#996100", "VERDE":"#126b38", "AZUL":"#165ba0"}[cor]
+    prioridade = " — ATENÇÃO PRIORITÁRIA" if cor == "VERMELHO" else ""
+    st.markdown(f'<div style="border:1px solid {tinta};border-radius:12px;padding:14px;background:{fundo};color:{tinta};margin:8px 0 14px"><b>{emoji} FAROL SARESP — {cor}{prioridade}</b><div style="font-size:18px;font-weight:800;margin:5px 0">{titulo}!</div><div>{escape(descricao)}</div></div>', unsafe_allow_html=True)
+    st.markdown("**Ações necessárias**")
+    for acao in FAROL_ACOES[cor]:
+        st.markdown("• " + acao)
+    responsaveis = ("URE + direção + coordenação pedagógica + professores das turmas avaliadas" if cor == "VERMELHO" else "Direção + coordenação pedagógica, com apoio da URE conforme necessidade")
+    st.caption("Responsáveis: " + responsaveis)
+    if cor == "VERMELHO":
+        st.warning("⚠️ Atenção prioritária para o PEC e o CEC: acompanhar os encaminhamentos e registrar evidências das intervenções.")
+
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(page_title="GPS — Guia Pedagógico Semanal", page_icon="🧭", layout="wide")
 
@@ -1456,7 +1527,8 @@ def carregar_eventos_gcal(url_ics):
 
 @st.cache_data(ttl=180)
 def sincronizar_pasta_drive_completo(folder_id, api_key):
-    if not api_key or "COLE_AQUI" in api_key:
+    credenciais_privadas = st.secrets.get("gcp_service_account", None)
+    if (not api_key or "COLE_AQUI" in api_key) and not credenciais_privadas:
         return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), 0
 
     dfs_ind, dfs_curs, dfs_atpc_drv = [], [], []
@@ -1468,9 +1540,21 @@ def sincronizar_pasta_drive_completo(folder_id, api_key):
         q = urllib.parse.quote(f"'{fid}' in parents and trashed = false")
         url_api = f"https://www.googleapis.com/drive/v3/files?q={q}&fields=files(id,name,mimeType,modifiedTime)&key={api_key}"
         try:
-            resp = urllib.request.urlopen(url_api, timeout=15)
-            dados = json.loads(resp.read().decode("utf-8"))
-        except Exception:
+            if credenciais_privadas:
+                from google.oauth2 import service_account
+                from google.auth.transport.requests import AuthorizedSession
+                creds = service_account.Credentials.from_service_account_info(
+                    dict(credenciais_privadas), scopes=["https://www.googleapis.com/auth/drive.readonly"])
+                sessao = AuthorizedSession(creds)
+                resposta = sessao.get("https://www.googleapis.com/drive/v3/files", params={
+                    "q": f"'{fid}' in parents and trashed = false", "fields": "nextPageToken,files(id,name,mimeType,modifiedTime)", "pageSize": 1000}, timeout=20)
+                resposta.raise_for_status()
+                dados = resposta.json()
+            else:
+                resp = urllib.request.urlopen(url_api, timeout=15)
+                dados = json.loads(resp.read().decode("utf-8"))
+        except Exception as exc:
+            st.warning(f"Drive: sem acesso à pasta {caminho_pasta or 'principal'} ({exc}).")
             return
 
         for f in dados.get("files", []):
@@ -1494,7 +1578,18 @@ def sincronizar_pasta_drive_completo(folder_id, api_key):
                     else:
                         dl_url = f"https://www.googleapis.com/drive/v3/files/{f_id}?alt=media&key={api_key}"
 
-                    arq_bytes = BytesIO(urllib.request.urlopen(dl_url, timeout=20).read())
+                    if credenciais_privadas:
+                        if f_mime == "application/vnd.google-apps.spreadsheet":
+                            dl_url = f"https://www.googleapis.com/drive/v3/files/{f_id}/export?mimeType=application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                        elif f_mime == "application/vnd.google-apps.document":
+                            dl_url = f"https://www.googleapis.com/drive/v3/files/{f_id}/export?mimeType=application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                        else:
+                            dl_url = f"https://www.googleapis.com/drive/v3/files/{f_id}?alt=media"
+                        resposta_arq = sessao.get(dl_url, timeout=25)
+                        resposta_arq.raise_for_status()
+                        arq_bytes = BytesIO(resposta_arq.content)
+                    else:
+                        arq_bytes = BytesIO(urllib.request.urlopen(dl_url, timeout=20).read())
                     n_low = f_name.lower()
 
                     if n_low.endswith(".pdf") or f_mime == "application/pdf":
@@ -1990,7 +2085,7 @@ eh_recomposicao = pasta_atual == "RECOMPOSICAO"
 
 df_ind_global, df_curs_global, df_atpc_drive, df_planos_drive, df_termos_drive, qtd_arqs_drive = (
     sincronizar_pasta_drive_completo(ID_PASTA_DRIVE_GPS, GOOGLE_DRIVE_API_KEY)
-    if "COLE_AQUI" not in GOOGLE_DRIVE_API_KEY else (pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), 0)
+    if ("COLE_AQUI" not in GOOGLE_DRIVE_API_KEY or st.secrets.get("gcp_service_account", None)) else (pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), 0)
 )
 
 # Frequência local: disponibiliza os dados oficiais também nas telas de indicadores,
@@ -2366,6 +2461,7 @@ def gps_ficha_escola(registro, agenda, termos, data_referencia=None, cadastro=No
     else:
         itens_mes, itens_dia = pd.DataFrame(), pd.DataFrame()
     st.caption(f'Consulta de {mes:02d}/{ano} · {len(itens_mes)} visita(s) programada(s) nos dados carregados · {len(itens_dia)} na data selecionada')
+    gps_painel_farol_escola(codigo)
     lateral, conteudo = st.columns([1, 3], gap="large")
     secoes = {
         "🏫 Identificação": ["Dados da unidade", "Equipe gestora", "Matrículas e turmas"],
@@ -2747,6 +2843,16 @@ if pagina_gps == "🗺️ Mapa Territorial":
             st.stop()
         st.session_state.pop("gps_escola_detalhe_direto", None)
 
+    _farol_ure = gps_carregar_farol_oficial()
+    if not _farol_ure.empty:
+        _codigos_ure = set(cadastro["codigo_seduc"].astype(str))
+        _farol_ure = _farol_ure[_farol_ure["codigo_seduc"].isin(_codigos_ure)]
+        st.markdown("#### Farol SARESP — distribuição das escolas da URE")
+        _cols_farol = st.columns(4)
+        for _col, _cor in zip(_cols_farol, ["VERMELHO", "AMARELO", "VERDE", "AZUL"]):
+            with _col:
+                st.metric(FAROL_CORES[_cor][0] + " " + _cor.title(), int((_farol_ure["farol_saresp"] == _cor).sum()))
+        st.caption("A URE não recebe cor única. Classificações lidas do arquivo oficial, por código SEDUC; escolas sem dado não são classificadas.")
     st.caption("Localização **prevista**, não rastreamento físico. Histórico documentado por termos e alterações justificadas quando disponíveis. Atualize as fontes para recalcular.")
     hoje_mapa = date.today()
     # O calendário e a justificativa são fontes auditáveis; ausência de termo não significa ausência da visita.
@@ -3166,6 +3272,12 @@ if pagina_gps == "🗺️ Mapa Territorial":
         lambda c: str(len(contagem_visitas_cartao.get(c, set()))))
     filtrado["gps_data"] = data_ref.strftime("%d/%m/%Y")
     filtrado["gps_frequencia"] = filtrado["frequencia_pct"].map(_gps_pct)
+    filtrado["gps_farol"] = filtrado["codigo_seduc"].astype(str).map(
+        lambda c: gps_cor_farol(c) or "SEM DADO")
+    filtrado["gps_aviso_farol"] = filtrado["gps_farol"].map(lambda cor:
+        '<div style="background:#ffe5e5;color:#a11620;border-radius:6px;padding:6px 8px;margin:5px 0;font-size:11px;font-weight:700">⚠ FAROL VERMELHO — ATENÇÃO PRIORITÁRIA<br><span style="font-weight:400">Avanço bem abaixo do esperado. Ver ações na ficha da escola.</span></div>' if cor == "VERMELHO" else
+        '<div style="font-size:11px;margin:4px 0;color:#d4f4e5">● FAROL SARESP — ' + cor + '</div>' if cor != "SEM DADO" else
+        '<div style="font-size:10px;color:#b6cbd4;margin:3px 0">Farol SARESP: aguardando dado oficial</div>')
     filtrado["gps_prova"] = "—"
     filtrado["gps_lp"] = "—"
     filtrado["gps_mat"] = "—"
@@ -3224,6 +3336,7 @@ if pagina_gps == "🗺️ Mapa Territorial":
           <div style="font-size:11px;color:#fff;"><b>Ouro:</b> {gps_meta_ouro} &nbsp; <b>IFA:</b> {gps_meta_ifa}</div>
         </div>
       </div>
+      {gps_aviso_farol}
       <div style="display:flex;gap:9px;align-items:flex-start;">
         <div style="flex:1 1 48%;min-width:0;font-size:12px;overflow-wrap:anywhere;">
           {gps_contato_ure}
@@ -3263,6 +3376,7 @@ if pagina_gps == "🗺️ Mapa Territorial":
         sede["gps_meta_ouro"] = _gps_escape(metas_por_codigo.get("URE", {}).get("meta_ouro", "—") or "—")
         sede["gps_meta_ifa"] = _gps_escape(metas_por_codigo.get("URE", {}).get("ifa", "—") or "—")
         sede["gps_estilo_visita"] = "display:none;"
+        sede["gps_aviso_farol"] = ""
         sede["gps_contato_ure"] = ('<div style="margin-bottom:7px;"><b>Telefone:</b> '
             '<a href="tel:+551338477050" style="color:#a7e3ff;">(13) 3847-7050</a></div>'
             '<div><b>E-mail:</b> <a href="mailto:mir@educacao.sp.gov.br" '
