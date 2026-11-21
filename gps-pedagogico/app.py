@@ -3033,17 +3033,16 @@ if pagina_gps == "🗺️ Mapa Territorial":
     camadas.append(pdk.Layer("IconLayer", data=filtrado,
                              get_position="[longitude,latitude]", get_icon="icone",
                              get_size=18.5, size_scale=1, size_min_pixels=14,
-                             size_max_pixels=24, billboard=True, pickable=True, id="escolas"))
+                             size_max_pixels=24, billboard=True, pickable=True, auto_highlight=True, id="escolas"))
     if "sede" in locals() and not sede.empty:
         camadas.append(pdk.Layer("IconLayer", data=sede,
                                  get_position="[longitude,latitude]", get_icon="icone",
                                  get_size=37, size_scale=1, size_min_pixels=28,
-                                 size_max_pixels=48, billboard=True, pickable=True, id="sede_ure"))
+                                 size_max_pixels=48, billboard=True, pickable=True, auto_highlight=True, id="sede_ure"))
     tooltip = {"html":tooltip_html,
                "style":{"backgroundColor":"#17313d","color":"white","fontSize":"13px",
                         "maxWidth":"315px","borderRadius":"12px","padding":"7px",
-                        "maxHeight":"min(72vh, 430px)","overflowY":"auto",
-                        "transform":"translateY(-96%)","transformOrigin":"bottom center"}}
+                        "maxHeight":"min(75vh, 500px)","overflowY":"auto"}}
     vista = pdk.ViewState(latitude=float(filtrado.latitude.mean()),longitude=float(filtrado.longitude.mean()),zoom=9 if municipio=="Todos" else 11)
     evento = st.pydeck_chart(pdk.Deck(layers=camadas,initial_view_state=vista,tooltip=tooltip,map_style=None),
                              use_container_width=True,on_select="rerun",selection_mode="single-object",key="gps_mapa_selecao")
