@@ -2187,7 +2187,7 @@ with st.sidebar:
     st.markdown("---")
     st.markdown("### Navegação")
     grupos_gps = {
-        "🗺️ Mapa Territorial": ["Visão Regional", "Cadastro das Unidades", "Rotas e Distâncias", "Cobertura Territorial"],
+        "🗺️ Mapa Territorial": ["Visão Regional", "Ficha da Escola", "Cadastro das Unidades", "Rotas e Distâncias", "Cobertura Territorial"],
         "📋 Planejamento": ["Plano de Trabalho PEC", "Planner Mensal", "Agenda e Calendário"],
         "📝 Avaliações": ["SARESP", "Prova Paulista", "SAEB", "Avaliação Diagnóstica", "ENEM e Simulados"],
         "🏫 Frequência Escolar": ["Geral URE", "Escolas", "Turmas"],
@@ -2206,8 +2206,7 @@ with st.sidebar:
                              type="primary" if st.session_state["gps_destino"] == item else "secondary"):
                     st.session_state["gps_destino"] = item
     destino_gps = st.session_state["gps_destino"]
-    if destino_gps != "Visão Regional":
-        st.session_state.pop("gps_escola_detalhe_direto", None)
+    # A ficha deve persistir ao navegar; limpar apenas ao voltar explicitamente ao mapa.
     pagina_gps = ("🗺️ Mapa Territorial" if destino_gps in grupos_gps["🗺️ Mapa Territorial"] else
                   "📁 Fontes de Dados" if destino_gps == "Administração — Fontes de Dados" else
                   "📋 Planejamento e Indicadores")
@@ -2820,6 +2819,36 @@ if pagina_gps == "🗺️ Mapa Territorial":
     agenda_csv = gps_carregar_agenda_consolidada(cadastro)
     agenda = pd.concat([agenda_drive, agenda_csv], ignore_index=True).drop_duplicates(
         subset=["codigo_seduc", "PEC", "Data", "Atividade"], keep="last")
+
+    # FICHA INDIVIDUAL: acesso independente pelo menu, sem depender do mapa.
+    # Reutiliza o painel pedagógico completo e os mesmos dados do clique no pino.
+    if destino_gps == "Ficha da Escola":
+        st.title("🏫 Ficha Individual da Escola")
+        _lista_fichas = cadastro.sort_values(["municipio", "escola"]).copy()
+        _rotulos_fichas = {
+            str(r["codigo_seduc"]): f'{r["escola"]} · {r["municipio"]} · SEDUC {r["codigo_seduc"]}'
+            for _, r in _lista_fichas.iterrows()
+        }
+        _opcoes_fichas = list(_rotulos_fichas)
+        _selecionada_anterior = str(st.session_state.get("gps_escola_selecionada", ""))
+        _indice_ficha = _opcoes_fichas.index(_selecionada_anterior) if _selecionada_anterior in _opcoes_fichas else 0
+        _codigo_ficha_menu = st.selectbox(
+            "Selecione a unidade escolar", _opcoes_fichas,
+            index=_indice_ficha, format_func=lambda x: _rotulos_fichas[x],
+            key="gps_ficha_seletor_independente")
+        if _codigo_ficha_menu:
+            st.session_state["gps_escola_selecionada"] = _codigo_ficha_menu
+            _linha_ficha_menu = cadastro.loc[cadastro["codigo_seduc"].astype(str) == _codigo_ficha_menu]
+            if not _linha_ficha_menu.empty:
+                if st.button("← Voltar ao mapa territorial", key="gps_voltar_mapa_menu"):
+                    st.session_state["gps_destino"] = "Visão Regional"
+                    st.session_state.pop("gps_escola_detalhe_direto", None)
+                    st.session_state["gps_versao_mapa"] = st.session_state.get("gps_versao_mapa", 0) + 1
+                    st.rerun()
+                gps_ficha_escola(_linha_ficha_menu.iloc[0], agenda, df_termos_drive,
+                                 st.session_state.get("gps_data_ultima_selecao", date.today()),
+                                 cadastro=cadastro)
+        st.stop()
 
     # Navegação direta: um clique no pino abre a ficha como tela principal,
     # dispensando rolar a página abaixo do mapa.
@@ -3457,10 +3486,7 @@ if pagina_gps == "🗺️ Mapa Territorial":
     if selecionado and selecionado in set(cadastro["codigo_seduc"].astype(str)):
         st.session_state["gps_escola_selecionada"] = selecionado
     codigo_ficha = st.session_state.get("gps_escola_selecionada")
-    if codigo_ficha and codigo_ficha in set(cadastro["codigo_seduc"].astype(str)):
-        escola_ficha = cadastro[cadastro["codigo_seduc"].astype(str)==codigo_ficha].iloc[0]
-        st.divider()
-        gps_ficha_escola(escola_ficha, agenda, df_termos_drive, data_ref, cadastro=cadastro)
+    # A ficha é exibida em tela própria, não duplicada abaixo do mapa.
     with st.expander("📋 Conferência histórica: Plano × Termo × Justificativa", expanded=False):
         if agenda.empty:
             st.info("Nenhuma programação datada disponível para conferência.")
@@ -3473,6 +3499,9 @@ if pagina_gps == "🗺️ Mapa Territorial":
             st.dataframe(gps_formatar_datas_exibicao(conf), use_container_width=True, hide_index=True)
             st.caption("Termos e justificativas podem corrigir o status do passado sem apagar o plano original. Justificativas automáticas requerem GPS_justificativas_validadas.csv ou integração documental validada.")
     if destino_gps == "Cadastro das Unidades":
+        if st.button("🏫 Abrir ficha pedagógica completa", key="gps_cadastro_abrir_ficha"):
+            st.session_state["gps_destino"] = "Ficha da Escola"
+            st.rerun()
         st.dataframe(filtrado[["codigo_seduc","escola","municipio","tipo","endereco"]],hide_index=True,use_container_width=True)
     if selecionado and selecionado in set(cadastro["codigo_seduc"]):
         st.session_state["gps_escola_selecionada"] = selecionado
