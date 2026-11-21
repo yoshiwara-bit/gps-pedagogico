@@ -2110,13 +2110,60 @@ def gps_identificar_escola(texto, cadastro):
     return achados[0] if len(achados) == 1 else None
 
 
+# Ultimate Pro: distância rodoviária via OSRM; falha não é substituída por quilometragem fictícia.
+@st.cache_data(ttl=86400, show_spinner=False)
+def gps_distancia_rota(pontos):
+    """Retorna km e minutos por percurso rodoviário; None se serviço indisponível."""
+    if len(pontos) < 2:
+        return 0.0, 0.0
+    coords = ";".join(f"{float(lon):.6f},{float(lat):.6f}" for lat, lon in pontos)
+    url = f"https://router.project-osrm.org/route/v1/driving/{coords}?overview=false&steps=false"
+    try:
+        with urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent":"GPS-URE-Miracatu/1.0"}), timeout=8) as response:
+            data = json.load(response)
+        if data.get("code") == "Ok" and data.get("routes"):
+            rota = data["routes"][0]
+            return round(rota["distance"] / 1000, 1), round(rota["duration"] / 60)
+    except Exception:
+        pass
+    return None, None
+
+
+def gps_distancia_direta(p1, p2):
+    from math import radians, sin, cos, asin, sqrt
+    a, b = p1; c, d = p2
+    dl = radians(c-a); dn = radians(d-b)
+    h = sin(dl/2)**2 + cos(radians(a))*cos(radians(c))*sin(dn/2)**2
+    return round(12742 * asin(sqrt(h)), 1)
+
+
+def gps_resumo_quilometragem(agenda, cadastro, sede=(-24.285437,-47.458814)):
+    """Cada PEC/dia: URE -> escolas na ordem do horário quando informado -> URE."""
+    cols = ["PEC", "Data", "Escolas", "Visitas previstas", "Km rodoviários", "Minutos estimados", "Situação da rota"]
+    if agenda.empty:
+        return pd.DataFrame(columns=cols)
+    coords = {str(r["codigo_seduc"]):(float(r["latitude"]),float(r["longitude"])) for _,r in cadastro.iterrows()}
+    saida=[]
+    for (pec, dia), grupo in agenda.groupby(["PEC", "Data"]):
+        grupo = grupo.sort_values("Horário", kind="stable")
+        codigos = list(dict.fromkeys(str(x) for x in grupo["codigo_seduc"] if str(x) in coords))
+        if not codigos:
+            continue
+        pontos = [sede] + [coords[c] for c in codigos] + [sede]
+        km, minutos = gps_distancia_rota(tuple(pontos))
+        saida.append({"PEC":pec,"Data":dia,"Escolas":len(codigos),"Visitas previstas":len(grupo),
+                      "Km rodoviários":km,"Minutos estimados":minutos,
+                      "Situação da rota":"Calculada (estimativa)" if km is not None else "Rota indisponível"})
+    return pd.DataFrame(saida,columns=cols)
+
+
 def gps_carregar_agenda_consolidada(cadastro):
     """Agenda normalizada, auditável, opcional; nunca confunde plano de ação com visita datada."""
     from pathlib import Path
-    arq = Path(__file__).resolve().parent / "GPS_agenda_pecs_novembro_2026.csv"
+    arq = Path(__file__).resolve().parent / "GPS_agenda_pecs_novembro_2026_COMPLETA.csv"
     cols = ["codigo_seduc", "PEC", "Pasta", "Data", "Atividade", "Fonte", "Situação", "Objetivo", "Horário"]
     if not arq.exists():
-        st.warning("Agenda de visitas não encontrada: envie GPS_agenda_pecs_novembro_2026.csv para a mesma pasta do app.py no GitHub. Sem esse arquivo, o mapa não consegue mostrar visitas programadas que não estejam nos planos já importados.")
+        st.warning("Agenda de visitas não encontrada: envie GPS_agenda_pecs_novembro_2026_COMPLETA.csv para a mesma pasta do app.py no GitHub. Sem esse arquivo, o mapa não consegue mostrar visitas programadas que não estejam nos planos já importados.")
         return pd.DataFrame(columns=cols)
     try:
         base = pd.read_csv(arq, dtype=str, keep_default_na=False, encoding="utf-8-sig")
@@ -2416,7 +2463,7 @@ if pagina_gps == "🗺️ Mapa Territorial":
     import pathlib
     import pydeck as pdk
     from urllib.parse import quote as gps_url_quote
-    st.title("🗺️ Mapa Territorial — URE Miracatu | V10 Plus")
+    st.title("🗺️ Mapa Territorial — URE Miracatu | Ultimate Pro")
     caminho_csv = pathlib.Path(__file__).resolve().parent / "GPS_cadastro_40_unidades.csv"
     if not caminho_csv.exists():
         st.error("Arquivo GPS_cadastro_40_unidades.csv não encontrado junto ao app.py.")
@@ -2585,15 +2632,14 @@ if pagina_gps == "🗺️ Mapa Territorial":
         camadas.append(pdk.Layer(
             "TextLayer", data=rotulos_municipios,
             get_position="[longitude, latitude]", get_text="nome",
-            get_size=24, size_units="pixels", size_min_pixels=20, size_max_pixels=30,
-            get_color=[10, 22, 32, 255], get_text_anchor="middle",
-            get_alignment_baseline="center", get_background_color=[255, 255, 255, 225],
-            background=True, background_padding=[7, 4, 7, 4],
+            get_size=15, size_units="pixels", size_min_pixels=12, size_max_pixels=18,
+            get_color=[20, 32, 43, 255], get_text_anchor="middle",
+            get_alignment_baseline="center", background=False,
             billboard=True, pickable=False, id="nomes_municipios"
         ))
     # Sede: marcador distinto somente após coordenadas cadastradas em Secrets.
-    sede_lat = st.secrets.get("GPS_SEDE_URE_LATITUDE", None)
-    sede_lon = st.secrets.get("GPS_SEDE_URE_LONGITUDE", None)
+    sede_lat = st.secrets.get("GPS_SEDE_URE_LATITUDE", -24.285437)
+    sede_lon = st.secrets.get("GPS_SEDE_URE_LONGITUDE", -47.458814)
     if sede_lat is not None and sede_lon is not None:
         try:
             sede = pd.DataFrame([{"latitude":float(sede_lat),"longitude":float(sede_lon),"escola":"SEDE URE MIRACATU", "municipio":"Sede regional", "codigo_seduc":"URE", "agenda_hoje":"Sede administrativa"}])
@@ -2607,7 +2653,19 @@ if pagina_gps == "🗺️ Mapa Territorial":
                                      id="sede_ure"))
         except (TypeError,ValueError):
             st.warning("Coordenadas da sede da URE inválidas em Secrets.")
-    tooltip = {"html":"<b>{escola}</b><br/>Município: {municipio}<br/>SEDUC: {codigo_seduc}<br/><b>Visitas na data:</b> {quantidade_visitas}<br/><b>PEC / atividade / objetivo:</b> {agenda_hoje}<br/><small>Selecione a escola abaixo do mapa para abrir a ficha</small>",
+    # Raio-X no hover: indicadores não importados aparecem como sem dados.
+    # Distância em linha reta aparece identificada, sem fingir que é rodoviária.
+    from html import escape as _gps_escape
+    sede_coord = (-24.285437, -47.458814)
+    filtrado["distancia_ure"] = filtrado.apply(
+        lambda r: f"{gps_distancia_direta(sede_coord, (float(r['latitude']),float(r['longitude']))):.1f} km em linha reta (referência)" ,axis=1)
+    filtrado["agenda_hoje"] = filtrado["agenda_hoje"].map(lambda v: _gps_escape(str(v)).replace(" | ","<br/>"))
+    filtrado["raio_x"] = ("<div style='display:grid;grid-template-columns:1fr 1fr;gap:5px;margin:8px 0'>"
+        "<div style='background:#dceffb;color:#174c73;padding:7px;border-radius:6px'><b>Frequência geral</b><br/>Sem dados</div>"
+        "<div style='background:#ede5fa;color:#60378f;padding:7px;border-radius:6px'><b>Prova Paulista</b><br/>Sem dados</div>"
+        "<div style='background:#fff0df;color:#88480f;padding:7px;border-radius:6px'><b>LP abaixo do básico</b><br/>Sem dados</div>"
+        "<div style='background:#dff3e9;color:#126443;padding:7px;border-radius:6px'><b>MAT abaixo do básico</b><br/>Sem dados</div></div>")
+    tooltip = {"html":"<b>{escola}</b><br/>Município: {municipio} · SEDUC: {codigo_seduc}<br/><b>Visitas na data: {quantidade_visitas}</b><br/>{agenda_hoje}{raio_x}<hr style='opacity:.25'/><small>Distância da URE: {distancia_ure}</small>",
                "style":{"backgroundColor":"#17313d","color":"white","fontSize":"13px","maxWidth":"430px"}}
     vista = pdk.ViewState(latitude=float(filtrado.latitude.mean()),longitude=float(filtrado.longitude.mean()),zoom=9 if municipio=="Todos" else 11)
     evento = st.pydeck_chart(pdk.Deck(layers=camadas,initial_view_state=vista,tooltip=tooltip,map_style=None),
@@ -2674,7 +2732,39 @@ if pagina_gps == "🗺️ Mapa Territorial":
     codigo_atual = st.session_state.get("gps_escola_selecionada")
     # Ficha da data selecionada já exibida imediatamente abaixo do mapa.
     if destino_gps in ("Rotas e Distâncias", "Cobertura Territorial"):
-        st.info("Distâncias rodoviárias e cobertura por visitas confirmadas exigem dados de rota e termos validados. Nenhuma estimativa fictícia será apresentada.")
+        st.subheader("🚗 Quilometragem planejada dos PECs")
+        st.caption("Percurso estimado: URE → escolas programadas no dia → URE. Não representa rastreamento real nem comprovação da visita. A ordem das escolas segue os horários informados, quando disponíveis.")
+        agenda_dist = agenda.copy()
+        if pec_mapa != "Todos":
+            agenda_dist = agenda_dist[agenda_dist["PEC"] == pec_mapa]
+        if not agenda_dist.empty:
+            datas = pd.to_datetime(agenda_dist["Data"])
+            ano_dist = st.selectbox("Ano", sorted(datas.dt.year.unique(), reverse=True), key="gps_km_ano")
+            agenda_dist = agenda_dist[agenda_dist["Data"].map(lambda d:d.year == ano_dist)]
+            periodo = st.selectbox("Período", ["Dia", "Semana", "Mês", "Ano"], key="gps_km_periodo")
+            if periodo == "Dia":
+                agenda_dist = agenda_dist[agenda_dist["Data"] == data_ref]
+            elif periodo == "Semana":
+                inicio = data_ref - __import__("datetime").timedelta(days=data_ref.weekday())
+                fim = inicio + __import__("datetime").timedelta(days=6)
+                agenda_dist = agenda_dist[(agenda_dist["Data"] >= inicio)&(agenda_dist["Data"] <= fim)]
+            elif periodo == "Mês":
+                agenda_dist = agenda_dist[agenda_dist["Data"].map(lambda d:d.month == data_ref.month and d.year == data_ref.year)]
+            if st.button("Calcular distâncias rodoviárias", key="gps_km_calcular"):
+                with st.spinner("Consultando as rotas rodoviárias..."):
+                    km_df = gps_resumo_quilometragem(agenda_dist, cadastro)
+                st.session_state["gps_km_resultado"] = km_df
+            km_df = st.session_state.get("gps_km_resultado")
+            if isinstance(km_df, pd.DataFrame) and not km_df.empty:
+                st.dataframe(km_df, hide_index=True, use_container_width=True)
+                resumo_km = km_df.groupby("PEC",as_index=False).agg({"Km rodoviários":"sum", "Visitas previstas":"sum", "Data":"nunique"}).rename(columns={"Data":"Dias programados"})
+                st.subheader("Total por PEC")
+                st.dataframe(resumo_km, hide_index=True, use_container_width=True)
+                st.download_button("Baixar quilometragem CSV", km_df.to_csv(index=False).encode("utf-8-sig"),"GPS_quilometragem_pecs.csv", "text/csv")
+                if km_df["Km rodoviários"].isna().any():
+                    st.warning("Algumas rotas não foram calculadas. Os totais são parciais e não incluem percursos indisponíveis.")
+        else:
+            st.info("Não há visitas datadas no período para calcular trajetos.")
     st.stop()
 
 if pagina_gps == "📁 Fontes de Dados":
@@ -3325,7 +3415,7 @@ if eh_cec_ou_at:
             except Exception as exc:
                 st.error(f"Não foi possível ler justificativas: {exc}")
         from pathlib import Path
-        arquivo_agenda_alertas = Path(__file__).resolve().parent / "GPS_agenda_pecs_novembro_2026.csv"
+        arquivo_agenda_alertas = Path(__file__).resolve().parent / "GPS_agenda_pecs_novembro_2026_COMPLETA.csv"
         agenda_cec = pd.DataFrame()
         if arquivo_agenda_alertas.exists():
             try:
