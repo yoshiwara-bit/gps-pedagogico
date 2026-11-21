@@ -2788,6 +2788,81 @@ if pagina_gps == "🗺️ Mapa Territorial":
             st.caption("Somente termos de visita vinculados ao plano. Justificativas de não realização encerram pendências, mas não são contadas como visitas.")
         else:
             st.info("Nenhuma visita documentada corresponde ao PEC selecionado neste mês.")
+    # Status documental por visita: a agenda nunca comprova realização.
+    def _gps_status_visita(pec, escola, dia):
+        chave = (gps_chave_pec(pec), str(escola), dia)
+        documentos = set()
+        if not termos_mapa.empty:
+            documentos = set((gps_chave_pec(r["PEC"]), str(r["codigo_seduc"]), r["Data"])
+                             for _, r in termos_mapa.iterrows())
+        justificada = None
+        if not justificativas_mapa.empty:
+            for _, j in justificativas_mapa.iterrows():
+                jd = gps_data_segura(j.get("Data_Prevista"))
+                jc = gps_identificar_escola(str(j.get("Escola", "")), cadastro)
+                if (gps_chave_pec(j.get("PEC", "")), str(jc), jd) != chave:
+                    continue
+                situacao = normalizar_texto(j.get("Situacao", ""))
+                motivo = str(j.get("Motivo", "")).strip()
+                if motivo and any(x in situacao for x in ("NAO REALIZ", "CANCEL")):
+                    justificada = motivo
+                    break
+        if chave in documentos and justificada:
+            return "Divergência documental", justificada
+        if chave in documentos:
+            return "Realizada", "Termo localizado"
+        if justificada:
+            return "Não realizada — justificada", justificada
+        if dia > date.today():
+            return "Agendada", "Data futura"
+        return "Prevista — aguardando termo", "Execução não comprovada"
+
+    # Ficha mensal por PEC: preserva cancelamentos e distingue agendadas,
+    # pendentes, realizadas e justificadas. Nunca transforma plano em termo.
+    if not agenda.empty and {"PEC", "Data", "codigo_seduc", "Escola"}.issubset(agenda.columns):
+        registros_status = []
+        for _, visita in agenda.iterrows():
+            dia = gps_data_segura(visita.get("Data"))
+            if not dia:
+                continue
+            status, motivo = _gps_status_visita(visita.get("PEC", ""), visita.get("codigo_seduc", ""), dia)
+            registros_status.append({"PEC": str(visita.get("PEC", "")),
+                                     "Escola": str(visita.get("Escola", "")),
+                                     "Data": dia, "Mês": dia.strftime("%m/%Y"),
+                                     "Status": status, "Motivo": motivo})
+        gps_status_mensal = pd.DataFrame(registros_status)
+        if not gps_status_mensal.empty:
+            gps_status_mensal = gps_status_mensal.drop_duplicates(subset=["PEC", "Escola", "Data"])
+            with st.expander("📋 Ficha mensal dos PECs — visitas e cancelamentos", expanded=False):
+                op_pec = sorted(gps_status_mensal["PEC"].dropna().unique().tolist())
+                op_mes = sorted(gps_status_mensal["Mês"].dropna().unique().tolist(),
+                                key=lambda x: (int(x[3:]), int(x[:2])), reverse=True)
+                c_pec, c_mes = st.columns(2)
+                with c_pec:
+                    pec_ficha = st.selectbox("PEC", op_pec, key="gps_status_pec")
+                with c_mes:
+                    mes_ficha = st.selectbox("Mês de referência", op_mes, key="gps_status_mes")
+                ficha = gps_status_mensal[(gps_status_mensal["PEC"] == pec_ficha) &
+                                          (gps_status_mensal["Mês"] == mes_ficha)].copy()
+                total = len(ficha)
+                realizadas = int((ficha["Status"] == "Realizada").sum())
+                canceladas = int((ficha["Status"] == "Não realizada — justificada").sum())
+                pendentes = int(ficha["Status"].str.startswith("Prevista").sum())
+                agendadas = int((ficha["Status"] == "Agendada").sum())
+                a,b,c,d,e = st.columns(5)
+                a.metric("Programadas", total)
+                b.metric("Realizadas", realizadas)
+                c.metric("Agendadas", agendadas)
+                d.metric("Pendentes", pendentes)
+                e.metric("Não realizadas", canceladas)
+                ficha["Data"] = ficha["Data"].map(lambda x: x.strftime("%d/%m/%Y"))
+                st.dataframe(ficha[["Data", "Escola", "Status", "Motivo"]],
+                             use_container_width=True, hide_index=True)
+                st.download_button("Baixar ficha mensal (CSV)",
+                                   ficha.to_csv(index=False, sep=";").encode("utf-8-sig"),
+                                   file_name=f"gps_visitas_{mes_ficha.replace('/', '-')}.csv",
+                                   mime="text/csv", key="gps_baixar_status_mensal")
+
     # Calendário único: programação visível em qualquer data; documentação contabilizada à parte.
     modo_tempo = "Passado" if data_ref < hoje_mapa else ("Presente" if data_ref == hoje_mapa else "Futuro")
     agenda_dia = agenda[agenda["Data"] == data_ref].copy() if not agenda.empty else agenda.copy()
@@ -3004,6 +3079,16 @@ if pagina_gps == "🗺️ Mapa Territorial":
     filtrado["gps_prova"] = "—"
     filtrado["gps_lp"] = "—"
     filtrado["gps_mat"] = "—"
+    # Um status por escola/data no cartão; em visitas múltiplas mostra
+    # os estados distintos, sem ocultar justificativas de cancelamento.
+    status_por_escola = {}
+    if not agenda_dia.empty:
+        for _, r in agenda_dia.iterrows():
+            cod = str(r.get("codigo_seduc", ""))
+            status, _ = _gps_status_visita(r.get("PEC", ""), cod, data_ref)
+            status_por_escola.setdefault(cod, set()).add(status)
+    filtrado["gps_status"] = filtrado["codigo_seduc"].astype(str).map(
+        lambda cod: " / ".join(sorted(status_por_escola.get(cod, []))) or "Sem visita agendada")
     filtrado["gps_pec"] = "Não informado"
     filtrado["gps_atividade"] = "Nenhuma visita registrada na data"
     filtrado["gps_objetivo"] = "—"
@@ -3025,42 +3110,51 @@ if pagina_gps == "🗺️ Mapa Territorial":
                 filtrado.at[idx, "gps_atividade"] = _gps_escape(campos[1])
                 filtrado.at[idx, "gps_objetivo"] = _gps_escape(campos[2])
 
-    # O tooltip utiliza um único template HTML estático. A estrutura do Raio-X
-    # segue o modelo aprovado, com quatro cartões coloridos em duas colunas.
+    # Tooltip horizontal compacto: todo o conteúdo visível ao passar o mouse.
+    # Descrições extensas ficam completas na ficha escolar (clique no pino).
+    def _gps_resumo_tooltip(valor, limite=110):
+        valor = str(valor or "").strip()
+        return _gps_escape(valor[:limite - 1] + "…" if len(valor) > limite else valor)
+
+    filtrado["gps_pec"] = filtrado["gps_pec"].map(lambda x: _gps_resumo_tooltip(x, 70))
+    filtrado["gps_atividade"] = filtrado["gps_atividade"].map(lambda x: _gps_resumo_tooltip(x, 105))
+    filtrado["gps_objetivo"] = filtrado["gps_objetivo"].map(lambda x: _gps_resumo_tooltip(x, 105))
+
     tooltip_html = """
-    <div style="width:258px;max-width:calc(100vw - 48px);font-family:Arial,sans-serif;color:#fff;line-height:1.18;">
-      <div style="font-size:17px;font-weight:800;margin-bottom:2px;">{gps_nome}</div>
-      <div style="font-size:13px;color:#e1eef3;font-weight:600;">Município: {gps_municipio} · SEDUC: {gps_seduc}</div>
-      <div style="border-top:1px solid #44606b;margin:4px 0;"></div>
-      <div style="display:flex;justify-content:space-between;gap:5px;align-items:center;font-size:15px;">
-        <b>Visitas na data: {gps_visitas}</b>
-        <span style="background:#36505d;border-radius:12px;padding:2px 6px;font-size:13px;white-space:nowrap;">{gps_data}</span>
+    <div style="width:min(430px,calc(100vw - 46px));font-family:Arial,sans-serif;color:#fff;box-sizing:border-box;line-height:1.25;">
+      <div style="font-size:16px;font-weight:800;line-height:1.12;margin:0 0 3px;">{gps_nome}</div>
+      <div style="font-size:11px;color:#e1eef3;margin-bottom:6px;">{gps_municipio} · SEDUC {gps_seduc}</div>
+      <div style="display:flex;gap:9px;align-items:flex-start;">
+        <div style="flex:1 1 48%;min-width:0;font-size:12px;overflow-wrap:anywhere;">
+          <div style="display:flex;justify-content:space-between;gap:4px;align-items:center;margin-bottom:4px;">
+            <b>Visitas: {gps_visitas}</b>
+            <span style="background:#36505d;border-radius:9px;padding:2px 4px;font-size:10px;white-space:nowrap;">{gps_data}</span>
+          </div>
+          <div style="margin-bottom:3px;"><b>Status:</b> {gps_status}</div>
+          <div style="margin-bottom:3px;"><b>PEC:</b> {gps_pec}</div>
+          <div style="margin-bottom:3px;"><b>Atividade:</b> {gps_atividade}</div>
+          <div><b>Objetivo:</b> {gps_objetivo}</div>
+        </div>
+        <div style="flex:1 1 52%;min-width:0;">
+          <div style="font-size:12px;font-weight:800;margin-bottom:4px;">Raio-X Pedagógico</div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;">
+            <div style="background:#dceffb;color:#174c73;padding:5px 4px;border-radius:5px;min-width:0;">
+              <div style="font-size:10px;font-weight:700;">Frequência</div><div style="font-size:15px;font-weight:800;">{gps_frequencia}</div>
+            </div>
+            <div style="background:#ede5fa;color:#60378f;padding:5px 4px;border-radius:5px;min-width:0;">
+              <div style="font-size:10px;font-weight:700;">Prova Paulista</div><div style="font-size:15px;font-weight:800;">{gps_prova}</div>
+            </div>
+            <div style="background:#fff0df;color:#88480f;padding:5px 4px;border-radius:5px;min-width:0;">
+              <div style="font-size:10px;font-weight:700;">Português</div><div style="font-size:15px;font-weight:800;">{gps_lp}</div><div style="font-size:9px;">Abaixo do Básico</div>
+            </div>
+            <div style="background:#dff3e9;color:#126443;padding:5px 4px;border-radius:5px;min-width:0;">
+              <div style="font-size:10px;font-weight:700;">Matemática</div><div style="font-size:15px;font-weight:800;">{gps_mat}</div><div style="font-size:9px;">Abaixo do Básico</div>
+            </div>
+          </div>
+        </div>
       </div>
-      <div style="margin-top:2px;font-size:14px;"><b>PEC:</b> {gps_pec}</div>
-      <div style="margin-top:2px;font-size:14px;"><b>Atividade:</b> {gps_atividade}</div>
-      <div style="margin-top:2px;font-size:14px;"><b>Objetivo:</b> {gps_objetivo}</div>
-      <div style="border-top:1px solid #44606b;margin:4px 0;"></div>
-      <div style="font-size:15px;font-weight:800;margin-bottom:3px;">Raio-X Pedagógico</div>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;">
-        <div style="background:#dceffb;color:#174c73;padding:4px;border-radius:6px;">
-          <div style="font-size:13px;font-weight:700;">Frequência</div><div style="font-size:18px;font-weight:800;margin:0;">{gps_frequencia}</div>
-          <div style="font-size:11px;">Farol: sem dados</div>
-        </div>
-        <div style="background:#ede5fa;color:#60378f;padding:4px;border-radius:6px;">
-          <div style="font-size:13px;font-weight:700;">Prova Paulista</div><div style="font-size:18px;font-weight:800;margin:0;">{gps_prova}</div>
-          <div style="font-size:11px;">Farol: sem dados</div>
-        </div>
-        <div style="background:#fff0df;color:#88480f;padding:4px;border-radius:6px;">
-          <div style="font-size:13px;font-weight:700;">Língua Portuguesa</div><div style="font-size:18px;font-weight:800;margin:0;">{gps_lp}</div>
-          <div style="font-size:11px;">Abaixo do Básico</div>
-        </div>
-        <div style="background:#dff3e9;color:#126443;padding:4px;border-radius:6px;">
-          <div style="font-size:13px;font-weight:700;">Matemática</div><div style="font-size:18px;font-weight:800;margin:0;">{gps_mat}</div>
-          <div style="font-size:11px;">Abaixo do Básico</div>
-        </div>
-      </div>
-      <div style="border-top:1px solid #44606b;margin:4px 0 3px;"></div>
-      <div style="font-size:14px;color:#e1eef3;"><b>Distância rodoviária da URE:</b> {gps_distancia}</div>
+      <div style="border-top:1px solid #44606b;margin:6px 0 4px;"></div>
+      <div style="font-size:11px;color:#e1eef3;"><b>Distância rodoviária da URE:</b> {gps_distancia}</div>
     </div>"""
     # A sede tem dados próprios; placeholders comuns são preenchidos para que
     # a passagem do mouse nunca mostre nomes de campos ou HTML literal.
@@ -3070,6 +3164,7 @@ if pagina_gps == "🗺️ Mapa Territorial":
         sede["gps_seduc"] = "URE"
         sede["gps_visitas"] = "—"
         sede["gps_data"] = data_ref.strftime("%d/%m/%Y")
+        sede["gps_status"] = "Sede administrativa"
         sede["gps_pec"] = "Sede administrativa"
         sede["gps_atividade"] = "Telefone: (13) 3847-7050"
         sede["gps_objetivo"] = "E-mail: mir@educacao.sp.gov.br"
@@ -3090,8 +3185,8 @@ if pagina_gps == "🗺️ Mapa Territorial":
                                  size_max_pixels=48, billboard=True, pickable=True, auto_highlight=True, id="sede_ure"))
     tooltip = {"html":tooltip_html,
                "style":{"backgroundColor":"#17313d","color":"white","fontSize":"13px",
-                        "maxWidth":"272px","borderRadius":"10px","padding":"5px",
-                        "maxHeight":"225px","overflowY":"auto","overflowX":"hidden",
+                        "maxWidth":"min(446px, calc(100vw - 30px))","borderRadius":"10px","padding":"7px",
+                        "overflow":"visible",
                         "boxSizing":"border-box"}}
     vista = pdk.ViewState(latitude=float(filtrado.latitude.mean()),longitude=float(filtrado.longitude.mean()),zoom=9 if municipio=="Todos" else 11)
     evento = st.pydeck_chart(pdk.Deck(layers=camadas,initial_view_state=vista,tooltip=tooltip,map_style=None),
