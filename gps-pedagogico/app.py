@@ -2508,11 +2508,83 @@ if pagina_gps == "🗺️ Mapa Territorial":
                     "Horário":"Não informado","Pasta":"Não informada","Fonte":str(tr.get("Arquivo_Termo_PDF", "Termo")),
                     "Situação":"Documentada"})
     termos_mapa = pd.DataFrame(registros_termos)
+    # Consolidação mensal: somente termos vinculados comprovam visitas executadas.
+    # Justificativas válidas encerram pendências, mas não somam visitas não realizadas.
+    def gps_consolidacao_mensal(ano, mes):
+        previstos = agenda[agenda["Data"].apply(lambda d: isinstance(d, date) and d.year == ano and d.month == mes)].copy()
+        documentos = termos_mapa[termos_mapa["Data"].apply(lambda d: isinstance(d, date) and d.year == ano and d.month == mes)].copy() if not termos_mapa.empty else termos_mapa.copy()
+        if previstos.empty:
+            return False, documentos.iloc[0:0].copy(), 0, 0, "Sem programação mensal validada para conciliar."
+        previstos["_chave"] = previstos.apply(lambda r: (gps_chave_pec(r["PEC"]), str(r["codigo_seduc"]), r["Data"]), axis=1)
+        chaves_previstas = set(previstos["_chave"])
+        chaves_termos = set()
+        if not documentos.empty:
+            documentos["_chave"] = documentos.apply(lambda r: (gps_chave_pec(r["PEC"]), str(r["codigo_seduc"]), r["Data"]), axis=1)
+            chaves_termos = set(documentos["_chave"])
+        chaves_justificadas = set()
+        if not justificativas_mapa.empty:
+            for _, j in justificativas_mapa.iterrows():
+                dia = gps_data_segura(j.get("Data_Prevista"))
+                if not dia or dia.year != ano or dia.month != mes or not str(j.get("Motivo", "")).strip():
+                    continue
+                situacao = normalizar_texto(j.get("Situacao", ""))
+                # Remanejamento só encerra a pendência se houver termo da nova visita.
+                if any(x in situacao for x in ("NAO REALIZ", "CANCEL")):
+                    codigo = gps_identificar_escola(str(j.get("Escola", "")), cadastro)
+                    if codigo:
+                        chaves_justificadas.add((gps_chave_pec(j.get("PEC", "")), str(codigo), dia))
+                elif any(x in situacao for x in ("ALTER", "REMAR", "REAGEND")):
+                    nova_data = gps_data_segura(j.get("Nova_Data"))
+                    nova_escola = str(j.get("Nova_Escola", "")).strip() or str(j.get("Escola", ""))
+                    codigo_novo = gps_identificar_escola(nova_escola, cadastro)
+                    codigo_original = gps_identificar_escola(str(j.get("Escola", "")), cadastro)
+                    if nova_data and codigo_novo and codigo_original and (gps_chave_pec(j.get("PEC", "")), str(codigo_novo), nova_data) in chaves_termos:
+                        chaves_justificadas.add((gps_chave_pec(j.get("PEC", "")), str(codigo_original), dia))
+        pendentes = chaves_previstas - chaves_termos - chaves_justificadas
+        # Termos sem correspondência com a programação não são consolidados automaticamente.
+        confirmados = documentos[documentos["_chave"].isin(chaves_previstas)].drop_duplicates("_chave") if not documentos.empty else documentos.copy()
+        completo = not pendentes and not (chaves_termos - chaves_previstas)
+        motivo = "Consolidação documental concluída." if completo else "Existem registros sem termo ou justificativa válida, ou termos sem previsão correspondente."
+        return completo, confirmados, len(chaves_previstas), len(pendentes), motivo
+
     col_data, col_pec = st.columns([1, 2])
     data_ref = col_data.date_input("Data de referência", value=hoje_mapa, key="gps_mapa_data_ref")
     pecs_mapa = sorted(set(agenda.get("PEC", pd.Series(dtype=str)).dropna().astype(str).tolist()) |
                        set(termos_mapa.get("PEC", pd.Series(dtype=str)).dropna().astype(str).tolist()))
     pec_mapa = col_pec.selectbox("PEC", ["Todos"] + pecs_mapa, key="gps_mapa_pec")
+    st.markdown("#### 📊 Consolidação mensal de visitas")
+    mes_grafico = st.selectbox("Mês para o mapa de calor e os gráficos", options=list(range(1, 13)),
+                              index=data_ref.month - 1, format_func=lambda m: f"{m:02d}/{data_ref.year}",
+                              key="gps_mes_graficos")
+    consolidado, visitas_confirmadas_mes, total_previstas_mes, pendencias_mes, motivo_mes = gps_consolidacao_mensal(data_ref.year, mes_grafico)
+    # Atualização progressiva: cada termo vinculado ao planejamento já alimenta
+    # os gráficos e o mapa de calor, mesmo com outras visitas pendentes.
+    base_graficos = visitas_confirmadas_mes.copy()
+    if not base_graficos.empty:
+        st.success(f"{mes_grafico:02d}/{data_ref.year}: {len(base_graficos)} visita(s) documentada(s) até o momento.")
+        if pendencias_mes:
+            st.caption(f"Consolidação parcial: {pendencias_mes} de {total_previstas_mes} visitas programadas ainda aguardam termo ou justificativa conclusiva.")
+    else:
+        st.info(f"Ainda não há termos vinculados à programação de {mes_grafico:02d}/{data_ref.year}. Os gráficos e o mapa de calor serão preenchidos conforme os termos forem registrados.")
+    if not base_graficos.empty:
+        # Atualiza progressivamente, sem aguardar o fechamento do mês.
+        if pec_mapa != "Todos":
+            base_graficos = base_graficos[base_graficos["PEC"] == pec_mapa]
+        if not base_graficos.empty:
+            base_graficos["Escola"] = base_graficos["codigo_seduc"].map(cadastro.set_index("codigo_seduc")["escola"].to_dict())
+            base_graficos["Município"] = base_graficos["codigo_seduc"].map(cadastro.set_index("codigo_seduc")["municipio"].to_dict())
+            g1, g2 = st.columns(2)
+            with g1:
+                st.markdown("**Visitas documentadas por PEC**")
+                st.bar_chart(base_graficos.groupby("PEC").size().rename("Visitas"))
+                st.markdown("**Visitas documentadas por município**")
+                st.bar_chart(base_graficos.groupby("Município").size().rename("Visitas"))
+            with g2:
+                st.markdown("**Visitas documentadas por escola**")
+                st.bar_chart(base_graficos.groupby("Escola").size().rename("Visitas"))
+            st.caption("Somente termos de visita vinculados ao plano. Justificativas de não realização encerram pendências, mas não são contadas como visitas.")
+        else:
+            st.info("Nenhuma visita documentada corresponde ao PEC selecionado neste mês.")
     # Calendário único: data futura/atual = agenda; data passada = documentos
     # e programação original, sem presumir visita realizada por ausência de termo.
     modo_tempo = "Passado" if data_ref < hoje_mapa else ("Presente" if data_ref == hoje_mapa else "Futuro")
@@ -2539,6 +2611,21 @@ if pagina_gps == "🗺️ Mapa Territorial":
     if not visitas_periodo.empty:
         for cod, g in visitas_periodo.groupby("codigo_seduc"):
             resumo[str(cod)] = " | ".join(f"{r['PEC']} — {r['Data'].strftime('%d/%m/%Y')} — {r['Atividade']} — {r['Objetivo']} — {r['Horário']}" for _,r in g.iterrows())
+    # Frequência oficial por código SEDUC: CSV exportado da planilha MIRACATU.
+    # Atualizar o CSV no GitHub substitui os percentuais sem alterar o código.
+    caminho_frequencia = pathlib.Path(__file__).resolve().parent / "GPS_frequencia_escolas_2026.csv"
+    cadastro["frequencia_pct"] = float("nan")
+    if caminho_frequencia.exists():
+        try:
+            freq = pd.read_csv(caminho_frequencia, dtype={"codigo_seduc": str})
+            if {"codigo_seduc", "frequencia_pct"}.issubset(freq.columns):
+                freq = freq.drop_duplicates("codigo_seduc", keep="last")
+                valores = pd.to_numeric(freq.set_index("codigo_seduc")["frequencia_pct"], errors="coerce")
+                cadastro["frequencia_pct"] = cadastro["codigo_seduc"].astype(str).map(valores)
+            else:
+                st.warning("CSV de frequência sem as colunas obrigatórias: codigo_seduc, frequencia_pct.")
+        except Exception as exc:
+            st.warning(f"Não foi possível carregar a frequência oficial: {exc}")
     cadastro["agenda_hoje"] = cadastro["codigo_seduc"].astype(str).map(lambda x: resumo.get(x,"Nenhum registro correspondente"))
     contagens = visitas_periodo.groupby("codigo_seduc").size().to_dict() if not visitas_periodo.empty else {}
     cadastro["intensidade"] = cadastro["codigo_seduc"].map(lambda c: int(contagens.get(c,0)))
@@ -2563,6 +2650,10 @@ if pagina_gps == "🗺️ Mapa Territorial":
     if filtrado.empty:
         st.info("Nenhuma unidade encontrada.")
         st.stop()
+    if modo == "Mapa de calor":
+        # Mapa cumulativo dos termos já recebidos; visitas pendentes não são contadas.
+        contagens_mes = base_graficos.groupby("codigo_seduc").size().to_dict() if not base_graficos.empty else {}
+        filtrado["intensidade"] = filtrado["codigo_seduc"].map(lambda c: int(contagens_mes.get(c, 0)))
     if modo == "Visitas no período":
         filtrado["cor"] = filtrado["intensidade"].apply(lambda n: [22,163,74,245] if n else [150,150,150,180])
     if modo == "Mapa de calor":
@@ -2604,9 +2695,7 @@ if pagina_gps == "🗺️ Mapa Territorial":
         for feicao in feats:
             try:
                 lon, lat = gps_centroide_rotulo_municipio(feicao["geometry"])
-                nome = feicao["properties"]["municipio"].title()
-                if nome == "Juquia":
-                    nome = "Juquiá"
+                nome = feicao["properties"]["municipio"].replace("JUQUIA", "JUQUIÁ")
                 rotulos_municipios.append({"longitude": lon, "latitude": lat, "nome": nome})
             except (ValueError, KeyError, TypeError, ZeroDivisionError):
                 continue
@@ -2623,26 +2712,28 @@ if pagina_gps == "🗺️ Mapa Territorial":
                                  get_radius="600 + intensidade * 180", radius_min_pixels=9,
                                  radius_max_pixels=29, stroked=False, pickable=False,
                                  id="intensidade_escolas"))
+    if geojson and rotulos_municipios:
+        # Rótulos abaixo dos pinos: nenhum nome pode cobrir um marcador escolar.
+        camadas.append(pdk.Layer(
+            "TextLayer", data=rotulos_municipios,
+            get_position="[longitude, latitude]", get_text="nome",
+            get_size=18, size_units="pixels", size_min_pixels=15, size_max_pixels=21,
+            get_color=[0, 0, 0, 255], get_text_anchor="middle",
+            get_alignment_baseline="center", font_family="Arial, sans-serif",
+            font_weight=900, background=False,
+            billboard=True, pickable=False, id="nomes_municipios"
+        ))
     camadas.append(pdk.Layer("IconLayer", data=filtrado,
                              get_position="[longitude,latitude]", get_icon="icone",
                              get_size=18.5, size_scale=1, size_min_pixels=14,
                              size_max_pixels=24, billboard=True, pickable=True,
                              id="escolas"))
-    if geojson and rotulos_municipios:
-        camadas.append(pdk.Layer(
-            "TextLayer", data=rotulos_municipios,
-            get_position="[longitude, latitude]", get_text="nome",
-            get_size=15, size_units="pixels", size_min_pixels=12, size_max_pixels=18,
-            get_color=[20, 32, 43, 255], get_text_anchor="middle",
-            get_alignment_baseline="center", background=False,
-            billboard=True, pickable=False, id="nomes_municipios"
-        ))
     # Sede: marcador distinto somente após coordenadas cadastradas em Secrets.
     sede_lat = st.secrets.get("GPS_SEDE_URE_LATITUDE", -24.285437)
     sede_lon = st.secrets.get("GPS_SEDE_URE_LONGITUDE", -47.458814)
     if sede_lat is not None and sede_lon is not None:
         try:
-            sede = pd.DataFrame([{"latitude":float(sede_lat),"longitude":float(sede_lon),"escola":"SEDE URE MIRACATU", "municipio":"Sede regional", "codigo_seduc":"URE", "agenda_hoje":"Sede administrativa"}])
+            sede = pd.DataFrame([{"latitude":float(sede_lat),"longitude":float(sede_lon),"escola":"SEDE URE MIRACATU", "municipio":"Sede regional", "codigo_seduc":"URE", "agenda_hoje":"Sede administrativa", "conteudo_popup": ("<b>UNIDADE REGIONAL DE ENSINO DE MIRACATU</b><br/>Município: Miracatu/SP<br/>Telefone: (13) 3847-7050<br/>E-mail: <a href=\"mailto:mir@educacao.sp.gov.br\" style=\"color:#ffffff;text-decoration:underline\">mir@educacao.sp.gov.br</a>")}])
             # A sede mantém o tamanho original dos pinos das escolas (37 px),
             # mas usa dourado exclusivo, não utilizado por nenhum município.
             sede["icone"] = [gps_icone_escola([245, 184, 39])]
@@ -2653,19 +2744,42 @@ if pagina_gps == "🗺️ Mapa Territorial":
                                      id="sede_ure"))
         except (TypeError,ValueError):
             st.warning("Coordenadas da sede da URE inválidas em Secrets.")
-    # Raio-X no hover: indicadores não importados aparecem como sem dados.
-    # Distância em linha reta aparece identificada, sem fingir que é rodoviária.
+    # Conteúdo único por ponto: pydeck não substitui variáveis aninhadas em {raio_x}.
+    # Mantém a cor e as dimensões originais do card.
     from html import escape as _gps_escape
     sede_coord = (-24.285437, -47.458814)
-    filtrado["distancia_ure"] = filtrado.apply(
-        lambda r: f"{gps_distancia_direta(sede_coord, (float(r['latitude']),float(r['longitude']))):.1f} km em linha reta (referência)" ,axis=1)
-    filtrado["agenda_hoje"] = filtrado["agenda_hoje"].map(lambda v: _gps_escape(str(v)).replace(" | ","<br/>"))
-    filtrado["raio_x"] = ("<div style='display:grid;grid-template-columns:1fr 1fr;gap:5px;margin:8px 0'>"
-        "<div style='background:#dceffb;color:#174c73;padding:7px;border-radius:6px'><b>Frequência geral</b><br/>Sem dados</div>"
-        "<div style='background:#ede5fa;color:#60378f;padding:7px;border-radius:6px'><b>Prova Paulista</b><br/>Sem dados</div>"
-        "<div style='background:#fff0df;color:#88480f;padding:7px;border-radius:6px'><b>LP abaixo do básico</b><br/>Sem dados</div>"
-        "<div style='background:#dff3e9;color:#126443;padding:7px;border-radius:6px'><b>MAT abaixo do básico</b><br/>Sem dados</div></div>")
-    tooltip = {"html":"<b>{escola}</b><br/>Município: {municipio} · SEDUC: {codigo_seduc}<br/><b>Visitas na data: {quantidade_visitas}</b><br/>{agenda_hoje}{raio_x}<hr style='opacity:.25'/><small>Distância da URE: {distancia_ure}</small>",
+    def _gps_pct(valor):
+        try:
+            if pd.isna(valor):
+                return "Sem dados"
+            return f"{float(valor):.1f}%".replace(".", ",")
+        except (TypeError, ValueError):
+            return "Sem dados"
+    def _gps_card(titulo, valor, fundo, cor):
+        return (f"<div style='background:{fundo};color:{cor};padding:7px;border-radius:6px'>"
+                f"<b>{titulo}</b><br/>{_gps_escape(str(valor))}</div>")
+    def _gps_popup_escola(r):
+        raio_x = ("<div style='display:grid;grid-template-columns:1fr 1fr;gap:5px;margin:8px 0'>"
+            + _gps_card("Frequência geral", _gps_pct(r.get("frequencia_pct")), "#dceffb", "#174c73")
+            + _gps_card("Prova Paulista", "Sem dados", "#ede5fa", "#60378f")
+            + _gps_card("LP abaixo do básico", "Sem dados", "#fff0df", "#88480f")
+            + _gps_card("MAT abaixo do básico", "Sem dados", "#dff3e9", "#126443") + "</div>")
+        distancia = gps_distancia_direta(sede_coord, (float(r["latitude"]), float(r["longitude"])))
+        agenda_html = _gps_escape(str(r["agenda_hoje"])).replace(" | ", "<br/>")
+        return (f"<b>{_gps_escape(str(r['escola']))}</b><br/>"
+                f"Município: {_gps_escape(str(r['municipio']))} · SEDUC: {_gps_escape(str(r['codigo_seduc']))}<br/>"
+                f"<b>Visitas na data: {int(r['quantidade_visitas'])}</b><br/>"
+                f"{agenda_html}{raio_x}<hr style='opacity:.25'/>"
+                f"<small>Distância da URE: {distancia:.1f} km em linha reta (referência)</small>")
+    filtrado["conteudo_popup"] = filtrado.apply(_gps_popup_escola, axis=1)
+    # A sede tem o mesmo estilo de tooltip, mas conteúdo administrativo próprio.
+    # Não reutiliza placeholders destinados às escolas.
+    if sede_lat is not None and sede_lon is not None and 'sede' in locals():
+        sede["conteudo_popup"] = ("<b>UNIDADE REGIONAL DE ENSINO DE MIRACATU</b><br/>"
+            "Município: Miracatu/SP<br/>Telefone: (13) 3847-7050<br/>"
+            "E-mail: <a href='mailto:mir@educacao.sp.gov.br' style='color:#ffffff;text-decoration:underline'>"
+            "mir@educacao.sp.gov.br</a>")
+    tooltip = {"html":"{conteudo_popup}",
                "style":{"backgroundColor":"#17313d","color":"white","fontSize":"13px","maxWidth":"430px"}}
     vista = pdk.ViewState(latitude=float(filtrado.latitude.mean()),longitude=float(filtrado.longitude.mean()),zoom=9 if municipio=="Todos" else 11)
     evento = st.pydeck_chart(pdk.Deck(layers=camadas,initial_view_state=vista,tooltip=tooltip,map_style=None),
@@ -3250,6 +3364,51 @@ if destino_gps in ("Plano de Trabalho PEC", "Planner Mensal"):
             else:
                 st.success("✅ Todas as escolas previstas no seu Plano de Trabalho possuem Termo de Visita registrado no Drive.")
 
+def gps_filtrar_tipo_escola(df_indicadores, chave_filtro):
+    """Aplica filtro cadastral às escolas dos indicadores, sem alterar os dados originais.
+
+    A classificação vem exclusivamente do cadastro de unidades (tipo == EE).
+    Registros sem correspondência segura permanecem em Todas, nunca em Regulares.
+    """
+    opcao = st.radio(
+        "Tipo de escola:", ["Todas", "Regulares"], horizontal=True,
+        key=chave_filtro,
+    )
+    if opcao == "Todas" or df_indicadores is None or df_indicadores.empty:
+        return df_indicadores
+    if "Escola" not in df_indicadores.columns:
+        st.warning("Os indicadores não possuem a coluna Escola para aplicar o filtro.")
+        return df_indicadores.iloc[0:0].copy()
+
+    import pathlib
+    caminho = pathlib.Path(__file__).resolve().parent / "GPS_cadastro_40_unidades.csv"
+    if not caminho.exists():
+        st.warning("Cadastro de unidades não encontrado: não é possível identificar as escolas regulares.")
+        return df_indicadores.iloc[0:0].copy()
+    try:
+        cadastro_tipo = pd.read_csv(caminho, dtype=str, encoding="utf-8-sig").fillna("")
+        if not {"escola", "tipo"}.issubset(cadastro_tipo.columns):
+            raise ValueError("colunas escola e tipo ausentes")
+        nomes_regulares = {
+            normalizar_texto(nome) for nome in
+            cadastro_tipo.loc[cadastro_tipo["tipo"].map(normalizar_texto) == "EE", "escola"]
+        }
+        # Aceita apenas equivalências exatas, com prefixos institucionais opcionais.
+        # Não utiliza correspondência parcial, que poderia incluir CEL, CEEJA ou EEI.
+        def eh_regular(nome):
+            chave = normalizar_texto(nome)
+            if chave in nomes_regulares:
+                return True
+            for prefixo in ("EE ", "E.E. ", "ESCOLA ESTADUAL "):
+                if chave.startswith(prefixo) and chave[len(prefixo):] in nomes_regulares:
+                    return True
+            return False
+        return df_indicadores.loc[df_indicadores["Escola"].map(eh_regular)].copy()
+    except Exception as exc:
+        st.warning(f"Não foi possível aplicar o filtro de escolas regulares: {exc}")
+        return df_indicadores.iloc[0:0].copy()
+
+
 def exibir_banner_perfil_indicadores():
     if eh_cec_ou_at:
         st.caption(f"📂 {qtd_arqs_drive} arquivo(s) sincronizado(s) do Google Drive — Visão Global da URE Miracatu.")
@@ -3271,6 +3430,8 @@ if destino_gps in ("SARESP", "Prova Paulista", "SAEB", "Avaliação Diagnóstica
     exibir_banner_perfil_indicadores()
 
     df_av = df_ind_usuario[df_ind_usuario["Tipo_Indicador"] == "AVALIACAO"] if not df_ind_usuario.empty else pd.DataFrame()
+
+    df_av = gps_filtrar_tipo_escola(df_av, "gps_tipo_escola_avaliacoes")
 
     # Descobre dinamicamente todas as subpastas/avaliações presentes no Drive (garantindo Prova Paulista primeiro)
     subs_av_drive = sorted([s for s in df_av["Subcategoria"].dropna().unique().tolist() if s != "Outras Avaliações"]) if not df_av.empty else []
@@ -3331,6 +3492,7 @@ if destino_gps in ("Tarefa SP", "Leia SP", "Redação Paulista", "Matific Anos F
     exibir_banner_perfil_indicadores()
 
     df_pl = df_ind_usuario[df_ind_usuario["Tipo_Indicador"] == "PLATAFORMA"] if not df_ind_usuario.empty else pd.DataFrame()
+    df_pl = gps_filtrar_tipo_escola(df_pl, "gps_tipo_escola_plataformas")
     subs_pl_drive = sorted([s for s in df_pl["Subcategoria"].dropna().unique().tolist() if s != "Outras Plataformas"]) if not df_pl.empty else []
 
     if eh_cec_ou_at or eh_pec_qualidade:
@@ -3377,6 +3539,7 @@ if destino_gps in ("Geral URE", "Escolas", "Turmas"):
     exibir_banner_perfil_indicadores()
 
     df_fr = df_ind_usuario[df_ind_usuario["Tipo_Indicador"] == "FREQUENCIA"] if not df_ind_usuario.empty else pd.DataFrame()
+    df_fr = gps_filtrar_tipo_escola(df_fr, "gps_tipo_escola_frequencia")
     subs_fr_drive = sorted(df_fr["Periodo"].dropna().unique().tolist()) if not df_fr.empty else []
     per_fr_sel = st.selectbox("Selecione o Período / Subpasta de Frequência:", ["Todos os Períodos"] + subs_fr_drive, key="sel_subpasta_frequencia")
 
