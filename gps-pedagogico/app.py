@@ -2917,89 +2917,131 @@ if pagina_gps == "🗺️ Mapa Territorial":
                                      id="sede_ure"))
         except (TypeError,ValueError):
             st.warning("Coordenadas da sede da URE inválidas em Secrets.")
-    # Conteúdo único por ponto: pydeck não substitui variáveis aninhadas em {raio_x}.
-    # Mantém a cor e as dimensões originais do card.
+    # Cartão original: HTML estático no template do tooltip; somente valores são
+    # interpolados pelo deck.gl. Nunca colocar HTML dentro de um campo de dados,
+    # pois o Streamlit pode mostrá-lo como texto literal.
     from html import escape as _gps_escape
-    sede_coord = (-24.285437, -47.458814)
+    from concurrent.futures import ThreadPoolExecutor
+
     def _gps_pct(valor):
         try:
             if pd.isna(valor):
-                return "Sem dados"
+                return "—"
             return f"{float(valor):.1f}%".replace(".", ",")
         except (TypeError, ValueError):
-            return "Sem dados"
-    def _gps_card(titulo, valor, fundo, cor):
-        return (f"<div style='background:{fundo};color:{cor};padding:7px;border-radius:6px'>"
-                f"<b>{titulo}</b><br/>{_gps_escape(str(valor))}</div>")
-    def _gps_popup_escola(r):
-        raio_x = ("<div style='display:grid;grid-template-columns:1fr 1fr;gap:5px;margin:8px 0'>"
-            + _gps_card("Frequência geral", _gps_pct(r.get("frequencia_pct")), "#dceffb", "#174c73")
-            + _gps_card("Prova Paulista", "Sem dados", "#ede5fa", "#60378f")
-            + _gps_card("LP abaixo do básico", "Sem dados", "#fff0df", "#88480f")
-            + _gps_card("MAT abaixo do básico", "Sem dados", "#dff3e9", "#126443") + "</div>")
-        distancia = gps_distancia_direta(sede_coord, (float(r["latitude"]), float(r["longitude"])))
-        agenda_html = _gps_escape(str(r["agenda_hoje"])).replace(" | ", "<br/>")
-        return (f"<b>{_gps_escape(str(r['escola']))}</b><br/>"
-                f"Município: {_gps_escape(str(r['municipio']))} · SEDUC: {_gps_escape(str(r['codigo_seduc']))}<br/>"
-                f"<b>Visitas na data: {int(r['quantidade_visitas'])}</b><br/>"
-                f"{agenda_html}{raio_x}<hr style='opacity:.25'/>"
-                f"<small>Distância da URE: {distancia:.1f} km em linha reta (referência)</small>")
-    filtrado["conteudo_popup"] = filtrado.apply(_gps_popup_escola, axis=1)
-    # A sede tem o mesmo estilo de tooltip, mas conteúdo administrativo próprio.
-    # Não reutiliza placeholders destinados às escolas.
-    if sede_lat is not None and sede_lon is not None and 'sede' in locals():
-        sede["conteudo_popup"] = ("<b>UNIDADE REGIONAL DE ENSINO DE MIRACATU</b><br/>"
-            "Município: Miracatu/SP<br/>Telefone: (13) 3847-7050<br/>"
-            "E-mail: <a href='mailto:mir@educacao.sp.gov.br' style='color:#ffffff;text-decoration:underline'>"
-            "mir@educacao.sp.gov.br</a>")
-    # IMPORTANTE: pydeck serializa os dados da camada ao criá-la.
-    # Os cartões foram preenchidos depois da criação inicial dos IconLayers;
-    # recriá-los agora evita que o tooltip exiba literalmente {conteudo_popup}.
-    camadas = [camada for camada in camadas if getattr(camada, "id", None) not in ("escolas", "sede_ure")]
-    camadas.append(pdk.Layer("IconLayer", data=filtrado,
-                             get_position="[longitude,latitude]", get_icon="icone",
-                             get_size=18.5, size_scale=1, size_min_pixels=14,
-                             size_max_pixels=24, billboard=True, pickable=True,
-                             id="escolas"))
-    if 'sede' in locals() and not sede.empty:
-        camadas.append(pdk.Layer("IconLayer", data=sede,
-                                 get_position="[longitude,latitude]", get_icon="icone",
-                                 get_size=37, size_scale=1, size_min_pixels=28,
-                                 size_max_pixels=48, billboard=True, pickable=True,
-                                 id="sede_ure"))
-    # O tooltip do Streamlit/pydeck escapa HTML vindo dos dados. Nunca enviar
-    # tags como texto para o hover; usar campos de texto puros e a ficha rica
-    # da escola logo abaixo do mapa para conteúdo HTML formatado.
-    def _gps_tooltip_texto(r):
-        escola = str(r.get("escola", ""))
-        municipio_nome = str(r.get("municipio", ""))
-        seduc = str(r.get("codigo_seduc", ""))
-        visitas = int(r.get("quantidade_visitas", 0))
-        freq = _gps_pct(r.get("frequencia_pct"))
-        distancia = gps_distancia_direta(sede_coord, (float(r["latitude"]), float(r["longitude"])))
-        return (f"{escola}\nMunicípio: {municipio_nome} · SEDUC: {seduc}\n"
-                f"Visitas na data: {visitas}\n"
-                f"Frequência geral: {freq}\nProva Paulista: Sem dados\n"
-                f"LP abaixo do básico: Sem dados\nMAT abaixo do básico: Sem dados\n"
-                f"Distância da URE: {distancia:.1f} km em linha reta")
-    filtrado["texto_tooltip"] = filtrado.apply(_gps_tooltip_texto, axis=1)
-    if 'sede' in locals() and not sede.empty:
-        sede["texto_tooltip"] = ("UNIDADE REGIONAL DE ENSINO DE MIRACATU\n"
-                                  "Município: Miracatu/SP\nTelefone: (13) 3847-7050\n"
-                                  "E-mail: mir@educacao.sp.gov.br")
-    # Reconstruir as camadas depois de adicionar o texto do tooltip.
+            return "—"
+
+    # Consulta rodoviária real, com cache de 24 horas; sem fallback em linha reta.
+    # Execução paralela evita esperas sequenciais para todas as escolas.
+    @st.cache_data(ttl=86400, show_spinner=False)
+    def _gps_km_ure_escola(lat, lon, sede_lat, sede_lon):
+        km, _ = gps_distancia_rota(((sede_lat, sede_lon), (lat, lon)))
+        return km
+
+    sede_origem = (float(sede_lat), float(sede_lon)) if sede_lat is not None and sede_lon is not None else (-24.285437, -47.458814)
+    coords_escolas = [(float(r["latitude"]), float(r["longitude"])) for _, r in filtrado.iterrows()]
+    def _gps_consulta_km(ponto):
+        return _gps_km_ure_escola(ponto[0], ponto[1], sede_origem[0], sede_origem[1])
+    with ThreadPoolExecutor(max_workers=10) as pool:
+        kms_escolas = list(pool.map(_gps_consulta_km, coords_escolas))
+    filtrado["gps_distancia"] = [f"{km:.1f} km (via rodovia)".replace(".", ",") if km is not None
+                                 else "Distância rodoviária indisponível" for km in kms_escolas]
+    filtrado["gps_nome"] = filtrado["escola"].map(lambda x: _gps_escape(str(x)))
+    filtrado["gps_municipio"] = filtrado["municipio"].map(lambda x: _gps_escape(str(x)))
+    filtrado["gps_seduc"] = filtrado["codigo_seduc"].map(lambda x: _gps_escape(str(x)))
+    filtrado["gps_visitas"] = filtrado["quantidade_visitas"].map(lambda x: str(int(x)))
+    filtrado["gps_data"] = data_ref.strftime("%d/%m/%Y")
+    filtrado["gps_frequencia"] = filtrado["frequencia_pct"].map(_gps_pct)
+    filtrado["gps_prova"] = "—"
+    filtrado["gps_lp"] = "—"
+    filtrado["gps_mat"] = "—"
+    filtrado["gps_pec"] = "Não informado"
+    filtrado["gps_atividade"] = "Nenhuma visita registrada na data"
+    filtrado["gps_objetivo"] = "—"
+    if not visitas_periodo.empty:
+        visitas_por_escola = {}
+        for codigo, grupo in visitas_periodo.groupby("codigo_seduc"):
+            nomes = list(dict.fromkeys(str(x).strip() for x in grupo["PEC"] if str(x).strip()))
+            atividades = list(dict.fromkeys(str(x).strip() for x in grupo["Atividade"] if str(x).strip()))
+            objetivos = list(dict.fromkeys(str(x).strip() for x in grupo["Objetivo"] if str(x).strip()))
+            visitas_por_escola[str(codigo)] = (
+                "; ".join(nomes) or "Não informado",
+                "; ".join(atividades) or "Não informado",
+                "; ".join(objetivos) or "Não informado",
+            )
+        for idx, r in filtrado.iterrows():
+            campos = visitas_por_escola.get(str(r["codigo_seduc"]))
+            if campos:
+                filtrado.at[idx, "gps_pec"] = _gps_escape(campos[0])
+                filtrado.at[idx, "gps_atividade"] = _gps_escape(campos[1])
+                filtrado.at[idx, "gps_objetivo"] = _gps_escape(campos[2])
+
+    # O tooltip utiliza um único template HTML estático. A estrutura do Raio-X
+    # segue o modelo aprovado, com quatro cartões coloridos em duas colunas.
+    tooltip_html = """
+    <div style="width:420px;max-width:calc(100vw - 36px);font-family:Arial,sans-serif;color:#fff;line-height:1.45;">
+      <div style="font-size:17px;font-weight:750;margin-bottom:4px;">{gps_nome}</div>
+      <div style="font-size:11px;color:#d5e3e8;">Município: {gps_municipio} · SEDUC: {gps_seduc}</div>
+      <div style="border-top:1px solid #44606b;margin:14px 0;"></div>
+      <div style="display:flex;justify-content:space-between;gap:10px;align-items:center;">
+        <b>Visitas na data: {gps_visitas}</b>
+        <span style="background:#36505d;border-radius:16px;padding:3px 8px;font-size:11px;">{gps_data}</span>
+      </div>
+      <div style="margin-top:10px;font-size:12px;"><b>PEC:</b> {gps_pec}</div>
+      <div style="margin-top:7px;font-size:12px;"><b>Atividade:</b> {gps_atividade}</div>
+      <div style="margin-top:7px;font-size:12px;"><b>Objetivo:</b> {gps_objetivo}</div>
+      <div style="border-top:1px solid #44606b;margin:14px 0;"></div>
+      <div style="font-size:13px;font-weight:700;margin-bottom:9px;">Raio-X Pedagógico</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:9px;">
+        <div style="background:#dceffb;color:#174c73;padding:10px;border-radius:9px;min-height:65px;">
+          <div style="font-size:12px;">♧ Frequência</div><div style="font-size:19px;font-weight:700;margin:5px 0;">{gps_frequencia}</div>
+          <div style="font-size:10px;">Farol: sem dados</div>
+        </div>
+        <div style="background:#ede5fa;color:#60378f;padding:10px;border-radius:9px;min-height:65px;">
+          <div style="font-size:12px;">◇ Prova Paulista</div><div style="font-size:19px;font-weight:700;margin:5px 0;">{gps_prova}</div>
+          <div style="font-size:10px;">Farol: sem dados</div>
+        </div>
+        <div style="background:#fff0df;color:#88480f;padding:10px;border-radius:9px;min-height:65px;">
+          <div style="font-size:12px;">▣ Língua Portuguesa</div><div style="font-size:19px;font-weight:700;margin:5px 0;">{gps_lp}</div>
+          <div style="font-size:10px;">Abaixo do Básico</div>
+        </div>
+        <div style="background:#dff3e9;color:#126443;padding:10px;border-radius:9px;min-height:65px;">
+          <div style="font-size:12px;">▤ Matemática</div><div style="font-size:19px;font-weight:700;margin:5px 0;">{gps_mat}</div>
+          <div style="font-size:10px;">Abaixo do Básico</div>
+        </div>
+      </div>
+      <div style="border-top:1px solid #44606b;margin:14px 0 11px;"></div>
+      <div style="font-size:12px;color:#d5e3e8;">♧ Distância da URE: {gps_distancia}</div>
+    </div>"""
+    # A sede tem dados próprios; placeholders comuns são preenchidos para que
+    # a passagem do mouse nunca mostre nomes de campos ou HTML literal.
+    if "sede" in locals() and not sede.empty:
+        sede["gps_nome"] = "UNIDADE REGIONAL DE ENSINO DE MIRACATU"
+        sede["gps_municipio"] = "Miracatu/SP"
+        sede["gps_seduc"] = "URE"
+        sede["gps_visitas"] = "—"
+        sede["gps_data"] = data_ref.strftime("%d/%m/%Y")
+        sede["gps_pec"] = "Sede administrativa"
+        sede["gps_atividade"] = "Telefone: (13) 3847-7050"
+        sede["gps_objetivo"] = "E-mail: mir@educacao.sp.gov.br"
+        sede["gps_frequencia"] = "—"
+        sede["gps_prova"] = "—"
+        sede["gps_lp"] = "—"
+        sede["gps_mat"] = "—"
+        sede["gps_distancia"] = "0 km (sede)"
     camadas = [camada for camada in camadas if getattr(camada, "id", None) not in ("escolas", "sede_ure")]
     camadas.append(pdk.Layer("IconLayer", data=filtrado,
                              get_position="[longitude,latitude]", get_icon="icone",
                              get_size=18.5, size_scale=1, size_min_pixels=14,
                              size_max_pixels=24, billboard=True, pickable=True, id="escolas"))
-    if 'sede' in locals() and not sede.empty:
+    if "sede" in locals() and not sede.empty:
         camadas.append(pdk.Layer("IconLayer", data=sede,
                                  get_position="[longitude,latitude]", get_icon="icone",
                                  get_size=37, size_scale=1, size_min_pixels=28,
                                  size_max_pixels=48, billboard=True, pickable=True, id="sede_ure"))
-    tooltip = {"text":"{texto_tooltip}",
-               "style":{"backgroundColor":"#17313d","color":"white","fontSize":"13px","maxWidth":"430px","whiteSpace":"pre-line"}}
+    tooltip = {"html":tooltip_html,
+               "style":{"backgroundColor":"#17313d","color":"white","fontSize":"13px",
+                        "maxWidth":"450px","borderRadius":"12px","padding":"13px"}}
     vista = pdk.ViewState(latitude=float(filtrado.latitude.mean()),longitude=float(filtrado.longitude.mean()),zoom=9 if municipio=="Todos" else 11)
     evento = st.pydeck_chart(pdk.Deck(layers=camadas,initial_view_state=vista,tooltip=tooltip,map_style=None),
                              use_container_width=True,on_select="rerun",selection_mode="single-object",key="gps_mapa_selecao")
