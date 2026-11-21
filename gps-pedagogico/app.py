@@ -2760,19 +2760,19 @@ if pagina_gps == "🗺️ Mapa Territorial":
         def _gps_icone_nome_municipio(nome):
             from html import escape as _escape_xml
             texto = _escape_xml(str(nome).upper())
-            svg = ('<svg xmlns="http://www.w3.org/2000/svg" width="360" height="48" viewBox="0 0 360 48">'
-                   '<text x="180" y="31" text-anchor="middle" '
-                   'font-family="Arial,Helvetica,sans-serif" font-size="24" '
+            svg = ('<svg xmlns="http://www.w3.org/2000/svg" width="180" height="28" viewBox="0 0 180 28">'
+                   '<text x="90" y="19" text-anchor="middle" '
+                   'font-family="Arial,Helvetica,sans-serif" font-size="14" '
                    'font-weight="900" fill="#000000">' + texto + '</text></svg>')
             return {"url": "data:image/svg+xml;charset=utf-8," + gps_url_quote(svg, safe=''),
-                    "width": 360, "height": 48, "anchorX": 180, "anchorY": 24}
+                    "width": 180, "height": 28, "anchorX": 90, "anchorY": 14}
         for rotulo in rotulos_municipios:
             rotulo["icone_nome"] = _gps_icone_nome_municipio(rotulo["nome"])
         camadas.append(pdk.Layer(
             "IconLayer", data=rotulos_municipios,
             get_position="[longitude, latitude]", get_icon="icone_nome",
-            get_size=240, size_scale=1, size_min_pixels=150,
-            size_max_pixels=270, billboard=True, pickable=False,
+            get_size=22, size_scale=1, size_min_pixels=18,
+            size_max_pixels=24, billboard=True, pickable=False,
             id="nomes_municipios"
         ))
     camadas.append(pdk.Layer("IconLayer", data=filtrado,
@@ -2913,39 +2913,58 @@ if pagina_gps == "🗺️ Mapa Territorial":
     codigo_atual = st.session_state.get("gps_escola_selecionada")
     # Ficha da data selecionada já exibida imediatamente abaixo do mapa.
     if destino_gps in ("Rotas e Distâncias", "Cobertura Territorial"):
-        st.subheader("🚗 Quilometragem planejada dos PECs")
-        st.caption("Percurso estimado: URE → escolas programadas no dia → URE. Não representa rastreamento real nem comprovação da visita. A ordem das escolas segue os horários informados, quando disponíveis.")
-        agenda_dist = agenda.copy()
+        st.subheader("🚗 Quilometragem dos PECs")
+        st.caption("Cálculo automático de percurso rodoviário estimado. Planejado: Plano de Trabalho; documentado: Termos de Acompanhamento identificados. Não representa rastreamento real.")
+        from datetime import timedelta as _gps_timedelta
+        inicio_semana = data_ref - _gps_timedelta(days=data_ref.weekday())
+        inicio_mes = data_ref.replace(day=1)
+        periodos_km = {
+            "Dia": (data_ref, data_ref),
+            "Semana": (inicio_semana, inicio_semana + _gps_timedelta(days=6)),
+            "Mês": (inicio_mes, (inicio_mes.replace(day=28) + _gps_timedelta(days=4)).replace(day=1) - _gps_timedelta(days=1)),
+        }
+        agenda_km = agenda.copy()
+        termos_km = termos_mapa.copy()
         if pec_mapa != "Todos":
-            agenda_dist = agenda_dist[agenda_dist["PEC"] == pec_mapa]
-        if not agenda_dist.empty:
-            datas = pd.to_datetime(agenda_dist["Data"])
-            ano_dist = st.selectbox("Ano", sorted(datas.dt.year.unique(), reverse=True), key="gps_km_ano")
-            agenda_dist = agenda_dist[agenda_dist["Data"].map(lambda d:d.year == ano_dist)]
-            periodo = st.selectbox("Período", ["Dia", "Semana", "Mês", "Ano"], key="gps_km_periodo")
-            if periodo == "Dia":
-                agenda_dist = agenda_dist[agenda_dist["Data"] == data_ref]
-            elif periodo == "Semana":
-                inicio = data_ref - __import__("datetime").timedelta(days=data_ref.weekday())
-                fim = inicio + __import__("datetime").timedelta(days=6)
-                agenda_dist = agenda_dist[(agenda_dist["Data"] >= inicio)&(agenda_dist["Data"] <= fim)]
-            elif periodo == "Mês":
-                agenda_dist = agenda_dist[agenda_dist["Data"].map(lambda d:d.month == data_ref.month and d.year == data_ref.year)]
-            if st.button("Calcular distâncias rodoviárias", key="gps_km_calcular"):
-                with st.spinner("Consultando as rotas rodoviárias..."):
-                    km_df = gps_resumo_quilometragem(agenda_dist, cadastro)
-                st.session_state["gps_km_resultado"] = km_df
-            km_df = st.session_state.get("gps_km_resultado")
-            if isinstance(km_df, pd.DataFrame) and not km_df.empty:
-                st.dataframe(km_df, hide_index=True, use_container_width=True)
-                resumo_km = km_df.groupby("PEC",as_index=False).agg({"Km rodoviários":"sum", "Visitas previstas":"sum", "Data":"nunique"}).rename(columns={"Data":"Dias programados"})
-                st.subheader("Total por PEC")
-                st.dataframe(resumo_km, hide_index=True, use_container_width=True)
-                st.download_button("Baixar quilometragem CSV", km_df.to_csv(index=False).encode("utf-8-sig"),"GPS_quilometragem_pecs.csv", "text/csv")
-                if km_df["Km rodoviários"].isna().any():
-                    st.warning("Algumas rotas não foram calculadas. Os totais são parciais e não incluem percursos indisponíveis.")
-        else:
-            st.info("Não há visitas datadas no período para calcular trajetos.")
+            agenda_km = agenda_km[agenda_km["PEC"].map(gps_chave_pec) == gps_chave_pec(pec_mapa)]
+            if not termos_km.empty:
+                termos_km = termos_km[termos_km["PEC"].map(gps_chave_pec) == gps_chave_pec(pec_mapa)]
+
+        # Distâncias entre sede e escola: independentes de programação ou documentação.
+        st.markdown("**Distância da URE até cada escola**")
+        escolas_km = filtrado.copy()
+        if not escolas_km.empty:
+            escolas_km = escolas_km.sort_values("escola")
+            linhas_escolas_km = []
+            for _, escola_km in escolas_km.iterrows():
+                km_ida, _ = gps_distancia_rota(((-24.285437, -47.458814), (float(escola_km["latitude"]), float(escola_km["longitude"]))))
+                linhas_escolas_km.append({"Escola": escola_km["escola"], "Município": escola_km["municipio"], "Km URE → escola": km_ida})
+            tabela_escolas_km = pd.DataFrame(linhas_escolas_km)
+            st.dataframe(tabela_escolas_km, hide_index=True, use_container_width=True)
+            if tabela_escolas_km["Km URE → escola"].isna().any():
+                st.caption("Algumas distâncias rodoviárias estão indisponíveis; não foram substituídas por estimativas em linha reta.")
+
+        for nome_periodo, (inicio_km, fim_km) in periodos_km.items():
+            st.markdown(f"**{nome_periodo} — {inicio_km.strftime('%d/%m/%Y')} a {fim_km.strftime('%d/%m/%Y')}**")
+            planejadas_km = agenda_km[agenda_km["Data"].apply(lambda d: isinstance(d, date) and inicio_km <= d <= fim_km)] if not agenda_km.empty else agenda_km
+            documentadas_km = termos_km[termos_km["Data"].apply(lambda d: isinstance(d, date) and inicio_km <= d <= fim_km)] if not termos_km.empty else termos_km
+            # Os termos são a única fonte da quilometragem documentada.
+            previsto_km = gps_resumo_quilometragem(planejadas_km, cadastro)
+            realizado_km = gps_resumo_quilometragem(documentadas_km, cadastro)
+            def _gps_agregar_km(df, coluna):
+                if df.empty:
+                    return pd.DataFrame(columns=["PEC", coluna])
+                return df.groupby("PEC", as_index=False)["Km rodoviários"].sum(min_count=1).rename(columns={"Km rodoviários": coluna})
+            resumo_previsto = _gps_agregar_km(previsto_km, "Km planejados")
+            resumo_documentado = _gps_agregar_km(realizado_km, "Km documentados")
+            resumo_periodo = pd.merge(resumo_previsto, resumo_documentado, on="PEC", how="outer")
+            if resumo_periodo.empty:
+                st.info("Nenhum deslocamento planejado ou documentado neste período.")
+            else:
+                st.dataframe(resumo_periodo.sort_values("PEC"), hide_index=True, use_container_width=True)
+                if resumo_periodo[["Km planejados", "Km documentados"]].isna().any().any():
+                    st.caption("Células vazias indicam ausência de registros ou rota indisponível; não equivalem a zero quilômetro.")
+        st.caption("A quilometragem documentada é uma estimativa do trajeto URE → escolas com termo → URE, não uma medição de deslocamento efetivo. Termos novos passam a integrar os cálculos quando forem carregados pelo GPS.")
     st.stop()
 
 if pagina_gps == "📁 Fontes de Dados":
@@ -3491,6 +3510,72 @@ def exibir_banner_perfil_indicadores():
             plats_txt = ", ".join(regras_info["plataformas"]) if regras_info.get("plataformas") else "Nenhuma específica"
             st.info(f"🎯 **Filtro específico da sua pasta ({pasta_atual} — {comp_atual}):** Componentes `{comps_txt}` | Plataformas `{plats_txt}`.")
 
+def gps_tres_visoes(df, identificador, titulo, metrica="Indicador (%)", cadastro_fallback=False):
+    """Três níveis de consulta, sem atribuir dados de escola a turmas inexistentes."""
+    if identificador == "frequencia" and st.session_state.get("gps_ultima_secao_frequencia") != destino_gps:
+        st.session_state[f"gps_visao_{identificador}"] = {"Geral URE": "Geral URE", "Escolas": "Escola", "Turmas": "Turmas"}.get(destino_gps, "Geral URE")
+        st.session_state["gps_ultima_secao_frequencia"] = destino_gps
+    visao = st.radio("Visualização:", ["Geral URE", "Escola", "Turmas"],
+                     horizontal=True, key=f"gps_visao_{identificador}")
+    base = df.copy() if df is not None else pd.DataFrame()
+    if visao == "Geral URE":
+        st.markdown(f"#### Geral da URE — {titulo}")
+        if base.empty:
+            st.info("Ainda não há resultados disponíveis para esta seleção.")
+            return
+        valores = pd.to_numeric(base.get("Proficiencia_Pct", pd.Series(dtype=float)), errors="coerce")
+        escolas_validas = base.get("Escola", pd.Series(dtype=str)).dropna().astype(str).nunique()
+        st.metric("Escolas com dados", escolas_validas)
+        if valores.notna().any():
+            # Média de escolas, não média ponderada por estudantes.
+            medias = base.assign(_valor=valores).groupby("Escola", dropna=True)["_valor"].mean()
+            if not medias.empty:
+                st.metric("Média das escolas com dados", f"{medias.mean():.1f}%")
+                st.caption("Média simples das escolas com dados; não representa média ponderada por matrículas.")
+        if "Escola" in base:
+            quadro = base.assign(_valor=valores).groupby("Escola", as_index=False)["_valor"].mean()
+            quadro.columns = ["Escola", metrica]
+            st.dataframe(quadro.sort_values("Escola"), hide_index=True, use_container_width=True)
+        return
+
+    escolas = sorted(base["Escola"].dropna().astype(str).unique().tolist()) if not base.empty and "Escola" in base else []
+    if cadastro_fallback and not escolas:
+        try:
+            cadastro = pd.read_csv(Path(__file__).resolve().parent / "GPS_cadastro_40_unidades.csv", dtype=str, encoding="utf-8-sig").fillna("")
+            if st.session_state.get(f"gps_tipo_escola_{identificador}") == "Regulares":
+                cadastro = cadastro[cadastro["tipo"].map(normalizar_texto) == "EE"]
+            escolas = sorted(cadastro["escola"].loc[lambda x: x.str.strip() != ""].unique().tolist())
+            if not eh_cec_ou_at and escolas_usuario:
+                carteira = {normalizar_texto(e) for e in escolas_usuario}
+                escolas = [e for e in escolas if normalizar_texto(e) in carteira]
+        except (OSError, ValueError, KeyError, pd.errors.ParserError):
+            pass
+    escola = st.selectbox("Selecione a escola:", ["Selecione uma escola..."] + escolas,
+                          key=f"gps_escola_visao_{identificador}")
+    if escola == "Selecione uma escola...":
+        return
+    por_escola = base[base["Escola"].astype(str) == escola].copy() if not base.empty else pd.DataFrame()
+    if visao == "Escola":
+        st.markdown(f"#### {titulo} — {escola}")
+        if por_escola.empty:
+            st.info("Não há resultados disponíveis para esta escola.")
+        else:
+            colunas = [c for c in ["Escola", "Periodo", "Componente", "Proficiencia_Pct", "Participacao_Pct", "Nivel"] if c in por_escola]
+            st.dataframe(por_escola[colunas], hide_index=True, use_container_width=True)
+        return
+    turmas = []
+    if not por_escola.empty and "Turma" in por_escola:
+        detalhados = por_escola[por_escola.get("Nivel_Granularidade", pd.Series("", index=por_escola.index)).isin(["TURMA", "ESTUDANTE"])]
+        turmas = sorted({str(t).strip() for t in detalhados["Turma"].dropna() if str(t).strip() and normalizar_texto(t) not in ("CONSOLIDADO", "GERAL", "NAN", "CONSOLIDADO DA ESCOLA")})
+    turma = st.selectbox("Selecione a turma:", ["Todas as turmas"] + turmas,
+                         key=f"gps_turma_visao_{identificador}_{escola}")
+    if not turmas:
+        st.info("Ainda não há resultados por turma para esta escola. Os dados gerais da escola não são atribuídos às turmas.")
+        return
+    detalhados = detalhados[detalhados["Turma"].astype(str) == turma] if turma != "Todas as turmas" else detalhados
+    colunas = [c for c in ["Escola", "Turma", "Periodo", "Componente", "Proficiencia_Pct", "Participacao_Pct", "Nivel"] if c in detalhados]
+    st.dataframe(detalhados[colunas], hide_index=True, use_container_width=True)
+
 # --- ABA 2: AVALIAÇÕES (COM SUBPASTAS DINÂMICAS E PROVA PAULISTA MAIS ATUAL) ---
 if destino_gps in ("SARESP", "Prova Paulista", "SAEB", "Avaliação Diagnóstica", "ENEM e Simulados"):
     st.subheader(f"📝 Avaliações — {pasta_atual} ({comp_atual})")
@@ -3551,7 +3636,7 @@ if destino_gps in ("SARESP", "Prova Paulista", "SAEB", "Avaliação Diagnóstica
             if not periodo_filtro.startswith("Todos"):
                 df_av_filt = df_av_filt[df_av_filt["Periodo"].str.contains(periodo_filtro, case=False, na=False)]
 
-    renderizar_tabela_hierarquica(df_av_filt, f"{tipo_prova} — {periodo_filtro}", "Proficiência Média (%)")
+    gps_tres_visoes(df_av_filt, "avaliacoes", f"{tipo_prova} — {periodo_filtro}", "Proficiência média (%)")
 
 # --- ABA 3: PLATAFORMAS DIGITAIS (ESCOLA → TURMA) ---
 if destino_gps in ("Tarefa SP", "Leia SP", "Redação Paulista", "Matific Anos Finais", "Khan Academy", "Speak", "Open English", "Elefante Letrado", "Matific Anos Iniciais", "Alura", "Robótica", "Programação"):
@@ -3573,52 +3658,7 @@ if destino_gps in ("Tarefa SP", "Leia SP", "Redação Paulista", "Matific Anos F
             {normalizar_texto(nome) for nome in nomes_plataforma}
         )].copy()
 
-    # Escolas com dados da plataforma são a fonte preferencial. Se a plataforma
-    # ainda não foi sincronizada, mostrar o cadastro, sem inventar resultados.
-    escolas_disponiveis = sorted(df_pl["Escola"].dropna().astype(str).unique().tolist()) if not df_pl.empty else []
-    if not escolas_disponiveis:
-        from pathlib import Path
-        cadastro_path = Path(__file__).resolve().parent / "GPS_cadastro_40_unidades.csv"
-        if cadastro_path.exists():
-            try:
-                cadastro_pl = pd.read_csv(cadastro_path, dtype=str, encoding="utf-8-sig").fillna("")
-                if st.session_state.get("gps_tipo_escola_plataformas", "Todas") == "Regulares":
-                    cadastro_pl = cadastro_pl[cadastro_pl["tipo"].map(normalizar_texto) == "EE"]
-                escolas_disponiveis = sorted(cadastro_pl["escola"].loc[lambda x: x.str.strip() != ""].unique().tolist())
-                # Para os perfis com carteira escolar, não expor escolas fora dela.
-                if not eh_cec_ou_at and escolas_usuario:
-                    carteira = {normalizar_texto(e) for e in escolas_usuario}
-                    escolas_disponiveis = [e for e in escolas_disponiveis if normalizar_texto(e) in carteira]
-            except Exception as exc:
-                st.warning(f"Não foi possível carregar o cadastro de escolas: {exc}")
-
-    escola_sel = st.selectbox(
-        "Selecione a escola:", ["Selecione uma escola..."] + escolas_disponiveis,
-        key=f"gps_pl_escola_{destino_gps}"
-    )
-    if escola_sel != "Selecione uma escola...":
-        df_escola_pl = df_pl[df_pl["Escola"] == escola_sel].copy() if not df_pl.empty else pd.DataFrame()
-        turmas_pl = sorted({str(t).strip() for t in df_escola_pl.get("Turma", pd.Series(dtype=str)).dropna()
-                            if str(t).strip() and normalizar_texto(t) not in ("CONSOLIDADO", "GERAL", "NAN")})
-        turma_sel = st.selectbox(
-            "Selecione a turma:", ["Todas as turmas"] + turmas_pl,
-            key=f"gps_pl_turma_{destino_gps}_{escola_sel}"
-        )
-        if not df_escola_pl.empty:
-            if turma_sel != "Todas as turmas":
-                df_escola_pl = df_escola_pl[df_escola_pl["Turma"].astype(str) == turma_sel]
-            if not df_escola_pl.empty:
-                st.markdown(f"#### Resultados — {destino_gps} | {escola_sel}" +
-                            (f" | {turma_sel}" if turma_sel != "Todas as turmas" else ""))
-                colunas_visiveis = [c for c in ["Escola", "Turma", "Componente", "Periodo", "Proficiencia_Pct", "Nivel_Granularidade"]
-                                    if c in df_escola_pl.columns]
-                st.dataframe(df_escola_pl[colunas_visiveis], use_container_width=True, hide_index=True)
-            else:
-                st.info("Não há resultados disponíveis para esta turma na plataforma selecionada.")
-        else:
-            st.info(f"Ainda não há resultados sincronizados de {destino_gps} para {escola_sel}.")
-        if not turmas_pl:
-            st.caption("As turmas aparecerão automaticamente quando houver dados detalhados desta escola e plataforma.")
+    gps_tres_visoes(df_pl, "plataformas", destino_gps, "Resultado médio (%)", cadastro_fallback=True)
 
 # --- ABA 4: FREQUÊNCIA ESCOLAR (COM SUBPASTAS / PERÍODOS DINÂMICOS) ---
 if destino_gps in ("Geral URE", "Escolas", "Turmas"):
@@ -3634,9 +3674,7 @@ if destino_gps in ("Geral URE", "Escolas", "Turmas"):
     if not df_fr_filt.empty and per_fr_sel != "Todos os Períodos":
         df_fr_filt = df_fr_filt[df_fr_filt["Periodo"] == per_fr_sel]
 
-    if destino_gps == "Turmas" and not df_fr_filt.empty and not df_fr_filt["Nivel_Granularidade"].isin(["TURMA", "ESTUDANTE"]).any():
-        st.info("A base local contém frequência por escola. Os resultados por turma serão exibidos quando as planilhas detalhadas forem integradas.")
-    renderizar_tabela_hierarquica(df_fr_filt, f"Frequência Escolar ({per_fr_sel})", "Frequência Média (%)")
+    gps_tres_visoes(df_fr_filt, "frequencia", f"Frequência Escolar ({per_fr_sel})", "Frequência média (%)")
 
 # ==============================================================================
 # ALERTAS CEC — TERMO DE VISITA: 7 DIAS (AMARELO), FIM DA QUINZENA (VERMELHO)
