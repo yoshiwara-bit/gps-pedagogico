@@ -2085,6 +2085,8 @@ with st.sidebar:
                              type="primary" if st.session_state["gps_destino"] == item else "secondary"):
                     st.session_state["gps_destino"] = item
     destino_gps = st.session_state["gps_destino"]
+    if destino_gps != "Visão Regional":
+        st.session_state.pop("gps_escola_detalhe_direto", None)
     pagina_gps = ("🗺️ Mapa Territorial" if destino_gps in grupos_gps["🗺️ Mapa Territorial"] else
                   "📁 Fontes de Dados" if destino_gps == "Administração — Fontes de Dados" else
                   "📋 Planejamento e Indicadores")
@@ -2642,7 +2644,7 @@ if pagina_gps == "🗺️ Mapa Territorial":
     import pathlib
     import pydeck as pdk
     from urllib.parse import quote as gps_url_quote
-    st.title("🗺️ Mapa Territorial — URE Miracatu | Ultimate Pro")
+    st.title("🗺️ Mapa Territorial — URE Miracatu")
     caminho_csv = pathlib.Path(__file__).resolve().parent / "GPS_cadastro_40_unidades.csv"
     if not caminho_csv.exists():
         st.error("Arquivo GPS_cadastro_40_unidades.csv não encontrado junto ao app.py.")
@@ -2670,6 +2672,11 @@ if pagina_gps == "🗺️ Mapa Territorial":
             if st.button("← Voltar ao mapa territorial", key="gps_voltar_mapa_ficha"):
                 st.session_state.pop("gps_escola_detalhe_direto", None)
                 st.session_state.pop("gps_escola_selecionada", None)
+                # A seleção anterior do pydeck persiste no Streamlit. Gerar uma
+                # nova chave limpa o evento, evitando reabrir a mesma escola.
+                st.session_state["gps_versao_mapa"] = st.session_state.get("gps_versao_mapa", 0) + 1
+                st.session_state.pop("gps_mapa_escola_ficha", None)
+                st.session_state["gps_destino"] = "Visão Regional"
                 st.rerun()
             st.caption("Ficha da escola selecionada no mapa")
             _gps_data_ficha = st.session_state.get("gps_data_ultima_selecao", date.today())
@@ -2781,8 +2788,7 @@ if pagina_gps == "🗺️ Mapa Territorial":
             st.caption("Somente termos de visita vinculados ao plano. Justificativas de não realização encerram pendências, mas não são contadas como visitas.")
         else:
             st.info("Nenhuma visita documentada corresponde ao PEC selecionado neste mês.")
-    # Calendário único: data futura/atual = agenda; data passada = documentos
-    # e programação original, sem presumir visita realizada por ausência de termo.
+    # Calendário único: programação visível em qualquer data; documentação contabilizada à parte.
     modo_tempo = "Passado" if data_ref < hoje_mapa else ("Presente" if data_ref == hoje_mapa else "Futuro")
     agenda_dia = agenda[agenda["Data"] == data_ref].copy() if not agenda.empty else agenda.copy()
     termos_dia = termos_mapa[termos_mapa["Data"] == data_ref].copy() if not termos_mapa.empty else termos_mapa.copy()
@@ -2828,7 +2834,17 @@ if pagina_gps == "🗺️ Mapa Territorial":
     c1,c2,c3 = st.columns(3)
     c1.metric("Unidades georreferenciadas",len(cadastro))
     c2.metric("Escolas no período",sum(v>0 for v in contagens.values()))
-    c3.metric("Visitas com termo" if modo_tempo=="Passado" else "Visitas programadas",len(visitas_periodo))
+    # Indicador documental: nunca usar a agenda como prova de visita realizada.
+    # A programação continua visível no mapa, mas só termos efetivamente carregados
+    # e identificados contam no indicador de visitas com termo.
+    termos_indicador = termos_dia.copy()
+    if pec_mapa != "Todos" and not termos_indicador.empty:
+        termos_indicador = termos_indicador[
+            termos_indicador["PEC"].astype(str).map(gps_chave_pec) == gps_chave_pec(pec_mapa)
+        ]
+    if data_ref in FERIADOS_EEC:
+        termos_indicador = termos_indicador.iloc[0:0].copy()
+    c3.metric("Visitas com termo", len(termos_indicador))
     if modo_tempo != "Passado" and agenda.empty:
         st.error("Nenhuma visita programada foi carregada. Confira o arquivo CSV da agenda e a importação dos Planos de Trabalho. Zero neste painel significa ausência de dados válidos, não ausência de visitas.")
     elif modo_tempo != "Passado" and visitas_periodo.empty:
@@ -3079,7 +3095,7 @@ if pagina_gps == "🗺️ Mapa Territorial":
                         "boxSizing":"border-box"}}
     vista = pdk.ViewState(latitude=float(filtrado.latitude.mean()),longitude=float(filtrado.longitude.mean()),zoom=9 if municipio=="Todos" else 11)
     evento = st.pydeck_chart(pdk.Deck(layers=camadas,initial_view_state=vista,tooltip=tooltip,map_style=None),
-                             use_container_width=True,on_select="rerun",selection_mode="single-object",key="gps_mapa_selecao")
+                             use_container_width=True,on_select="rerun",selection_mode="single-object",key=f"gps_mapa_selecao_{st.session_state.get('gps_versao_mapa', 0)}")
     selecionado = None
     try:
         selecoes = evento.selection.objects.get("escolas",[])
