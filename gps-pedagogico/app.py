@@ -14,6 +14,7 @@ import urllib.parse
 import urllib.request
 import unicodedata
 import os
+import pathlib
 import re
 import json
 import hashlib
