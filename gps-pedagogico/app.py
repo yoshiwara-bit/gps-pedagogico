@@ -1314,7 +1314,7 @@ def cor_farol_percentual(valor, tipo="AVALIACAO"):
     except (TypeError, ValueError):
         return ""
     if tipo == "FREQUENCIA":
-        return ("background-color: #F5C4B2; color: #8A2A0B; font-weight: bold;" if numero < 85 else
+        return ("background-color: #FFCDD2; color: #B71C1C; font-weight: bold;" if numero < 85 else
                 "background-color: #FFF0A8; color: #735700; font-weight: bold;" if numero < 90 else
                 "background-color: #BCE8C5; color: #075E23; font-weight: bold;")
     return ("background-color: #FFCDD2; color: #B71C1C; font-weight: bold;" if numero <= 40 else
@@ -2022,6 +2022,28 @@ def gps_frequencia_local():
         st.warning(f"Não foi possível carregar a frequência local: {exc}")
         return pd.DataFrame()
 
+@st.cache_data(ttl=300, show_spinner=False)
+def gps_frequencia_turmas_local():
+    raiz = pathlib.Path(__file__).resolve().parent
+    arquivo = raiz / "GPS_frequencia_turmas_2026.csv"
+    cadastro = raiz / "GPS_cadastro_40_unidades.csv"
+    if not arquivo.exists() or not cadastro.exists():
+        return pd.DataFrame()
+    try:
+        turmas = pd.read_csv(arquivo, dtype={"codigo_seduc": str, "id_turma": str}, encoding="utf-8-sig")
+        cad = pd.read_csv(cadastro, dtype={"codigo_seduc": str}, encoding="utf-8-sig")
+        turmas = turmas.merge(cad[["codigo_seduc", "escola"]].drop_duplicates("codigo_seduc"), on="codigo_seduc", how="inner")
+        return pd.DataFrame({
+            "Tipo_Indicador": "FREQUENCIA", "Subcategoria": "Frequência Escolar",
+            "Periodo": turmas["periodo"].values, "Nivel_Granularidade": "TURMA",
+            "Escola": turmas["escola"].values, "Turma": turmas["turma"].values,
+            "Estudante": "", "Professor": "", "Recomposicao": "",
+            "Componente": "Frequência", "Proficiencia_Pct": turmas["frequencia_pct"].values,
+            "Participacao_Pct": float("nan"), "Nivel": "",
+        })
+    except (OSError, ValueError, KeyError, pd.errors.ParserError):
+        return pd.DataFrame()
+
 freq_local_gps = gps_frequencia_local()
 if not freq_local_gps.empty:
     if df_ind_global.empty:
@@ -2038,6 +2060,10 @@ if not freq_local_gps.empty:
 # Consolida base de ATPC (Sheets + Drive + Upload na sessão)
 dfs_atpc_lista = [d for d in [df_atpc_sheets, df_atpc_drive] if not d.empty]
 df_atpc_global = pd.concat(dfs_atpc_lista, ignore_index=True).drop_duplicates() if dfs_atpc_lista else pd.DataFrame()
+
+freq_turmas_gps = gps_frequencia_turmas_local()
+if not freq_turmas_gps.empty:
+    df_ind_global = pd.concat([df_ind_global, freq_turmas_gps], ignore_index=True)
 
 df_ind_usuario = (
     df_ind_global if eh_cec_ou_at
@@ -3938,6 +3964,70 @@ def exibir_banner_perfil_indicadores():
             plats_txt = ", ".join(regras_info["plataformas"]) if regras_info.get("plataformas") else "Nenhuma específica"
             st.info(f"🎯 **Filtro específico da sua pasta ({pasta_atual} — {comp_atual}):** Componentes `{comps_txt}` | Plataformas `{plats_txt}`.")
 
+def gps_ordem_frequencia(dados, coluna_nome):
+    escolha = st.selectbox("Ordenar resultados:",
+        ["Menor frequência primeiro", "Maior frequência primeiro", "Alfabética A–Z", "Alfabética Z–A"],
+        key=f"gps_ordem_{coluna_nome}")
+    dados = dados.copy()
+    dados["Proficiencia_Pct"] = pd.to_numeric(dados["Proficiencia_Pct"], errors="coerce")
+    if escolha.startswith("Menor"):
+        return dados.sort_values(["Proficiencia_Pct", coluna_nome], ascending=[True, True], na_position="last")
+    if escolha.startswith("Maior"):
+        return dados.sort_values(["Proficiencia_Pct", coluna_nome], ascending=[False, True], na_position="last")
+    return dados.sort_values(coluna_nome, ascending=escolha.endswith("A–Z"))
+
+
+def gps_rankings_frequencia(dados, nome_coluna):
+    if dados.empty or nome_coluna not in dados or "Proficiencia_Pct" not in dados:
+        return
+    quadro = dados[[nome_coluna, "Proficiencia_Pct"]].copy()
+    quadro["Proficiencia_Pct"] = pd.to_numeric(quadro["Proficiencia_Pct"], errors="coerce")
+    quadro = quadro.dropna(subset=[nome_coluna, "Proficiencia_Pct"])
+    quadro = quadro.groupby(nome_coluna, as_index=False)["Proficiencia_Pct"].mean()
+    if quadro.empty:
+        return
+    esquerda, direita = st.columns(2)
+    for container, menor in [(esquerda, True), (direita, False)]:
+        with container:
+            st.markdown("**🚨 Top 3 — Menores frequências**" if menor else "**🏆 Top 3 — Maiores frequências**")
+            top = quadro.sort_values(["Proficiencia_Pct", nome_coluna], ascending=[menor, True]).head(3)
+            for i, (_, linha) in enumerate(top.iterrows(), 1):
+                valor = float(linha["Proficiencia_Pct"])
+                farol = "🔴" if valor < 85 else "🟡" if valor < 90 else "🟢"
+                st.markdown(f"{i}º {farol} **{linha[nome_coluna]}** — **{valor:.1f}%**".replace(".", ",") if False else f"{i}º {farol} **{linha[nome_coluna]}** — **{valor:.1f}%**")
+
+def gps_quadro_frequencia(dados, incluir_turma=False):
+    """Quadro compacto, com farol real e sem preencher turmas por inferência."""
+    if dados.empty:
+        return
+    campos = (["Turma"] if incluir_turma and "Turma" in dados.columns else []) + ["Periodo", "Proficiencia_Pct"]
+    campos = [c for c in campos if c in dados.columns]
+    quadro = dados[campos].copy()
+    quadro = quadro.rename(columns={"Turma": "Turma", "Periodo": "Período", "Proficiencia_Pct": "Frequência (%)"})
+    if "Frequência (%)" in quadro:
+        quadro["Frequência (%)"] = pd.to_numeric(quadro["Frequência (%)"], errors="coerce")
+    st.caption("Farol da frequência: 🔴 abaixo de 85% · 🟡 de 85% a menos de 90% · 🟢 90% ou mais")
+    if "Frequência (%)" in quadro:
+        estilizado = quadro.style.format({"Frequência (%)": lambda x: f"{x:.1f}%".replace(".", ",") if pd.notna(x) else "—"})
+        estilizado = estilizado.map(lambda x: cor_farol_percentual(x, "FREQUENCIA"), subset=["Frequência (%)"])
+        estilizado = estilizado.set_properties(subset=["Frequência (%)"], **{"text-align": "center"})
+        st.dataframe(estilizado, hide_index=True, use_container_width=False,
+                     column_config={"Período": st.column_config.TextColumn("Período", width="medium"),
+                                    "Turma": st.column_config.TextColumn("Turma", width="medium"),
+                                    "Frequência (%)": st.column_config.TextColumn("Frequência (%)", width="small")})
+    else:
+        st.dataframe(quadro, hide_index=True, use_container_width=False)
+
+
+def gps_linhas_turmas(por_escola):
+    if por_escola.empty or "Turma" not in por_escola:
+        return pd.DataFrame()
+    nivel = por_escola.get("Nivel_Granularidade", pd.Series("", index=por_escola.index))
+    turma_valida = por_escola["Turma"].fillna("").astype(str).map(normalizar_texto)
+    return por_escola[nivel.isin(["TURMA", "ESTUDANTE"]) &
+        ~turma_valida.isin(["", "CONSOLIDADO", "GERAL", "NAN", "CONSOLIDADO DA ESCOLA"])].copy()
+
+
 def gps_tres_visoes(df, identificador, titulo, metrica="Indicador (%)", cadastro_fallback=False):
     """Três níveis de consulta, sem atribuir dados de escola a turmas inexistentes."""
     if identificador == "frequencia" and st.session_state.get("gps_ultima_secao_frequencia") != destino_gps:
@@ -3947,6 +4037,10 @@ def gps_tres_visoes(df, identificador, titulo, metrica="Indicador (%)", cadastro
                      horizontal=True, key=f"gps_visao_{identificador}")
     base = df.copy() if df is not None else pd.DataFrame()
     if visao == "Geral URE":
+        if identificador == "frequencia" and "Nivel_Granularidade" in base:
+            nivel_escola = base[base["Nivel_Granularidade"].eq("ESCOLA")]
+            if not nivel_escola.empty:
+                base = nivel_escola
         st.markdown(f"#### Geral da URE — {titulo}")
         if base.empty:
             st.info("Ainda não há resultados disponíveis para esta seleção.")
@@ -3962,8 +4056,13 @@ def gps_tres_visoes(df, identificador, titulo, metrica="Indicador (%)", cadastro
                 st.caption("Média simples das escolas com dados; não representa média ponderada por matrículas.")
         if "Escola" in base:
             quadro = base.assign(_valor=valores).groupby("Escola", as_index=False)["_valor"].mean()
-            quadro.columns = ["Escola", metrica]
-            st.dataframe(quadro.sort_values("Escola"), hide_index=True, use_container_width=True)
+            quadro.columns = ["Escola", "Proficiencia_Pct"]
+            if identificador == "frequencia":
+                gps_rankings_frequencia(quadro, "Escola")
+                quadro = gps_ordem_frequencia(quadro, "Escola")
+                st.dataframe(quadro.rename(columns={"Proficiencia_Pct": "Frequência (%)"}).style.format({"Frequência (%)": "{:.1f}%"}).map(lambda x: cor_farol_percentual(x, "FREQUENCIA"), subset=["Frequência (%)"]), hide_index=True, use_container_width=False)
+            else:
+                st.dataframe(quadro.rename(columns={"Proficiencia_Pct": metrica}).sort_values("Escola"), hide_index=True, use_container_width=True)
         return
 
     escolas = sorted(base["Escola"].dropna().astype(str).unique().tolist()) if not base.empty and "Escola" in base else []
@@ -3987,22 +4086,38 @@ def gps_tres_visoes(df, identificador, titulo, metrica="Indicador (%)", cadastro
         st.markdown(f"#### {titulo} — {escola}")
         if por_escola.empty:
             st.info("Não há resultados disponíveis para esta escola.")
+        elif identificador == "frequencia":
+            st.markdown("**Frequência consolidada da escola**")
+            consolidados = por_escola[por_escola.get("Nivel_Granularidade", pd.Series("", index=por_escola.index)).eq("ESCOLA")]
+            if not consolidados.empty:
+                gps_quadro_frequencia(consolidados)
+            detalhados_escola = gps_linhas_turmas(por_escola)
+            st.markdown("**Frequência de todas as turmas**")
+            if detalhados_escola.empty:
+                st.info("A base atual contém apenas a frequência consolidada da escola. Para mostrar todas as turmas, é necessário importar a frequência por turma; o consolidado não será replicado artificialmente.")
+            else:
+                gps_rankings_frequencia(detalhados_escola, "Turma")
+                gps_quadro_frequencia(gps_ordem_frequencia(detalhados_escola, "Turma"), incluir_turma=True)
         else:
             colunas = [c for c in ["Escola", "Periodo", "Componente", "Proficiencia_Pct", "Participacao_Pct", "Nivel"] if c in por_escola]
             st.dataframe(por_escola[colunas], hide_index=True, use_container_width=True)
         return
     turmas = []
     if not por_escola.empty and "Turma" in por_escola:
-        detalhados = por_escola[por_escola.get("Nivel_Granularidade", pd.Series("", index=por_escola.index)).isin(["TURMA", "ESTUDANTE"])]
-        turmas = sorted({str(t).strip() for t in detalhados["Turma"].dropna() if str(t).strip() and normalizar_texto(t) not in ("CONSOLIDADO", "GERAL", "NAN", "CONSOLIDADO DA ESCOLA")})
+        detalhados = gps_linhas_turmas(por_escola)
+        turmas = sorted(detalhados["Turma"].dropna().astype(str).unique().tolist())
     turma = st.selectbox("Selecione a turma:", ["Todas as turmas"] + turmas,
                          key=f"gps_turma_visao_{identificador}_{escola}")
     if not turmas:
         st.info("Ainda não há resultados por turma para esta escola. Os dados gerais da escola não são atribuídos às turmas.")
         return
     detalhados = detalhados[detalhados["Turma"].astype(str) == turma] if turma != "Todas as turmas" else detalhados
-    colunas = [c for c in ["Escola", "Turma", "Periodo", "Componente", "Proficiencia_Pct", "Participacao_Pct", "Nivel"] if c in detalhados]
-    st.dataframe(detalhados[colunas], hide_index=True, use_container_width=True)
+    if identificador == "frequencia":
+        gps_rankings_frequencia(detalhados, "Turma")
+        gps_quadro_frequencia(gps_ordem_frequencia(detalhados, "Turma"), incluir_turma=True)
+    else:
+        colunas = [c for c in ["Escola", "Turma", "Periodo", "Componente", "Proficiencia_Pct", "Participacao_Pct", "Nivel"] if c in detalhados]
+        st.dataframe(detalhados[colunas], hide_index=True, use_container_width=True)
 
 # --- ABA 2: AVALIAÇÕES (COM SUBPASTAS DINÂMICAS E PROVA PAULISTA MAIS ATUAL) ---
 if destino_gps in ("SARESP", "Prova Paulista", "SAEB", "Avaliação Diagnóstica", "ENEM e Simulados"):
@@ -4095,6 +4210,14 @@ if destino_gps in ("Geral URE", "Escolas", "Turmas"):
 
     df_fr = df_ind_usuario[df_ind_usuario["Tipo_Indicador"] == "FREQUENCIA"] if not df_ind_usuario.empty else pd.DataFrame()
     df_fr = gps_filtrar_tipo_escola(df_fr, "gps_tipo_escola_frequencia")
+    periodo_tipo = st.radio("Período de análise:", ["Semana", "Mês", "Acumulado do ano"], horizontal=True, key="gps_periodo_tipo")
+    if periodo_tipo == "Mês":
+        st.info("Frequência mensal indisponível: são necessárias bases com dados suficientes para consolidar o mês. Nenhuma média semanal será inventada.")
+        df_fr = df_fr.iloc[0:0].copy()
+    elif periodo_tipo == "Semana":
+        df_fr = df_fr[df_fr["Periodo"].fillna("").str.contains("Semana|08 a 14/11/2026", case=False, regex=True)].copy()
+    else:
+        df_fr = df_fr[df_fr["Periodo"].fillna("").str.contains("Consolidado 2026|Acumulado", case=False, regex=True)].copy()
     subs_fr_drive = sorted(df_fr["Periodo"].dropna().unique().tolist()) if not df_fr.empty else []
     per_fr_sel = st.selectbox("Selecione o Período / Subpasta de Frequência:", ["Todos os Períodos"] + subs_fr_drive, key="sel_subpasta_frequencia")
 
