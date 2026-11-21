@@ -67,6 +67,45 @@ def gps_carregar_farol_oficial():
     except (OSError, ValueError, pd.errors.ParserError):
         return pd.DataFrame(columns=["codigo_seduc", "farol_saresp"])
 
+
+@st.cache_data(ttl=300, show_spinner=False)
+def gps_prova_paulista_local(nivel="escolas"):
+    arq = pathlib.Path(__file__).resolve().parent / f"GPS_prova_paulista_2026_3b_{nivel}.csv"
+    if not arq.exists():
+        return pd.DataFrame()
+    try:
+        df = pd.read_csv(arq, dtype={"codigo_seduc":str}, encoding="utf-8-sig")
+        df["codigo_seduc"] = df["codigo_seduc"].astype(str).str.replace(r"\.0$", "", regex=True).str.strip()
+        return df
+    except (OSError, ValueError, pd.errors.ParserError):
+        return pd.DataFrame()
+
+def gps_exibir_pp_escola(codigo):
+    base = gps_prova_paulista_local()
+    if base.empty:
+        st.info("Prova Paulista: CSV do 3º bimestre de 2026 ainda não publicado.")
+        return
+    dados = base[base["codigo_seduc"] == str(codigo).strip()]
+    if dados.empty:
+        st.info("Prova Paulista: não há resultados oficiais vinculados ao código SEDUC desta escola.")
+        return
+    r = dados.iloc[0]
+    st.markdown("#### Prova Paulista — 3º bimestre de 2026")
+    c1,c2,c3=st.columns(3)
+    for col,rotulo,campo in [(c1,"Acertos gerais","acertos_pct"),(c2,"Participação","participacao_pct"),(c3,"Total de alunos","total_alunos")]:
+        v=pd.to_numeric(r.get(campo),errors="coerce")
+        col.metric(rotulo, (f"{v:.1f}%" if campo.endswith("_pct") else f"{v:.0f}") if pd.notna(v) else "—")
+    disciplinas = {"mat_pct":"Matemática","port_pct":"Língua Portuguesa","ing_pct":"Inglês","hist_pct":"História","geo_pct":"Geografia","cie_pct":"Ciências","filo_pct":"Filosofia","soc_pct":"Sociologia","bio_pct":"Biologia","fis_pct":"Física","qui_pct":"Química"}
+    linhas=[{"Componente":rot,"Acertos (%)":r.get(campo)} for campo,rot in disciplinas.items() if campo in r.index and pd.notna(r.get(campo))]
+    if linhas:st.dataframe(pd.DataFrame(linhas),hide_index=True,use_container_width=True)
+    turmas=gps_prova_paulista_local("turmas")
+    if not turmas.empty:
+        sub=turmas[turmas["codigo_seduc"]==str(codigo).strip()]
+        if not sub.empty:
+            st.markdown("##### Resultados por turma")
+            st.dataframe(sub.drop(columns=["codigo_seduc","escola","ano","bimestre"],errors="ignore"),hide_index=True,use_container_width=True)
+    st.caption("Fonte: planilhas oficiais enviadas — Prova Paulista, 3º bimestre/2026. Valores em percentual de acertos; não representam níveis de proficiência SARESP.")
+
 def gps_cor_farol(codigo):
     base = gps_carregar_farol_oficial()
     if base.empty:
@@ -78,7 +117,7 @@ def gps_painel_farol_escola(codigo):
     from html import escape
     cor = gps_cor_farol(codigo)
     if not cor:
-        st.info("Farol SARESP: classificação oficial ainda não carregada para esta escola.")
+        st.info("Farol SARESP: classificação oficial não encontrada. Confira o arquivo GPS_farol_saresp_oficial.csv na mesma pasta do app.py e o código SEDUC.")
         return
     emoji, titulo, descricao = FAROL_CORES[cor]
     fundo = {"VERMELHO":"#fff0f0", "AMARELO":"#fff7e5", "VERDE":"#eaf7ed", "AZUL":"#eaf3ff"}[cor]
@@ -92,6 +131,35 @@ def gps_painel_farol_escola(codigo):
     st.caption("Responsáveis: " + responsaveis)
     if cor == "VERMELHO":
         st.warning("⚠️ Atenção prioritária para o PEC e o CEC: acompanhar os encaminhamentos e registrar evidências das intervenções.")
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def gps_saresp_2025_local():
+    caminho = pathlib.Path(__file__).resolve().parent / "GPS_saresp_2025_resultados.csv"
+    if not caminho.exists():
+        return pd.DataFrame()
+    try:
+        df = pd.read_csv(caminho, dtype={"codigo_seduc": str}, encoding="utf-8-sig")
+        obrigatorias = {"codigo_seduc", "escola", "ano_referencia", "componente", "etapa", "nota"}
+        if not obrigatorias.issubset(df.columns):
+            return pd.DataFrame()
+        df["codigo_seduc"] = df["codigo_seduc"].str.strip()
+        df["nota"] = pd.to_numeric(df["nota"], errors="coerce")
+        return df.dropna(subset=["nota"])
+    except (OSError, ValueError, pd.errors.ParserError):
+        return pd.DataFrame()
+
+def gps_exibir_saresp_2025(codigo):
+    dados = gps_saresp_2025_local()
+    if dados.empty:
+        st.info("SARESP 2025: adicione GPS_saresp_2025_resultados.csv ao lado do app.py.")
+        return
+    escola = dados[dados["codigo_seduc"] == str(codigo).strip()].copy()
+    if escola.empty:
+        st.info("SARESP 2025: escola não localizada com segurança pelo código SEDUC.")
+        return
+    st.caption("Fonte: SARESP 2025.xlsx · Notas por componente e ano/série. Não equivalem ao Farol SARESP 2026.")
+    st.dataframe(escola[["componente", "etapa", "nota"]].rename(columns={"componente":"Componente", "etapa":"Ano/série ou consolidado", "nota":"Nota SARESP 2025"}), hide_index=True, use_container_width=True)
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(page_title="GPS — Guia Pedagógico Semanal", page_icon="🧭", layout="wide")
@@ -2424,6 +2492,31 @@ def gps_total_anual_termos(codigo_seduc, ano, termos, cadastro):
     return len(chaves)
 
 
+@st.cache_data(ttl=300, show_spinner=False)
+def gps_cadastro_gestores():
+    """Cadastro extraído das fichas gerenciais SEDUC; não confunde códigos de escolas."""
+    arquivo = pathlib.Path(__file__).resolve().parent / "GPS_cadastro_40_unidades_ENRIQUECIDO.csv"
+    if not arquivo.is_file():
+        return pd.DataFrame()
+    try:
+        df = pd.read_csv(arquivo, dtype=str, encoding="utf-8-sig").fillna("")
+        df.columns = [str(c).strip() for c in df.columns]
+        if "codigo_seduc" not in df.columns:
+            return pd.DataFrame()
+        df["codigo_seduc"] = df["codigo_seduc"].str.strip().str.replace(r"\.0$", "", regex=True)
+        return df[df["codigo_seduc"].ne("")].drop_duplicates("codigo_seduc", keep="last")
+    except (OSError, ValueError, pd.errors.ParserError):
+        return pd.DataFrame()
+
+
+def gps_gestores_escola(codigo):
+    base = gps_cadastro_gestores()
+    if base.empty:
+        return None
+    linhas = base.loc[base["codigo_seduc"] == str(codigo).strip()]
+    return linhas.iloc[0] if not linhas.empty else None
+
+
 def gps_ficha_escola(registro, agenda, termos, data_referencia=None, cadastro=None):
     """V11 Plus: painel da escola com menu lateral e cartões temáticos.
 
@@ -2508,11 +2601,17 @@ def gps_ficha_escola(registro, agenda, termos, data_referencia=None, cadastro=No
         if subitem == "Raio-X Pedagógico":
             a,b = st.columns(2)
             with a: cartao("👥 Frequência geral", f"{_frequencia_ficha:.1f}%".replace(".", ",") if _frequencia_ficha is not None else "—", "Base de frequência escolar 2026" if _frequencia_ficha is not None else "Sem dados validados", "blue")
-            with b: cartao("📊 Prova Paulista", "—", "Farol: sem dados validados", "purple")
+            with b:
+                _pp = gps_prova_paulista_local()
+                _pp_linha = _pp[_pp["codigo_seduc"] == codigo] if not _pp.empty else pd.DataFrame()
+                _pp_valor = pd.to_numeric(_pp_linha.iloc[0].get("acertos_pct"), errors="coerce") if not _pp_linha.empty else float("nan")
+                cartao("📊 Prova Paulista", f"{_pp_valor:.1f}%".replace(".", ",") if pd.notna(_pp_valor) else "—", "3º bimestre de 2026 · acertos gerais" if pd.notna(_pp_valor) else "Sem dados validados", "purple")
             a,b = st.columns(2)
             with a: cartao("📖 Abaixo do Básico · Português", "—", "Quantidade e percentual não disponíveis", "orange")
             with b: cartao("🔢 Abaixo do Básico · Matemática", "—", "Quantidade e percentual não disponíveis", "green")
             st.caption("Aguardando dados oficiais. Não é possível inferir níveis de proficiência a partir do percentual de acertos.")
+        elif subitem == "Prova Paulista":
+            gps_exibir_pp_escola(codigo)
         elif subitem == "Visitas acumuladas no ano":
             # Apenas termos com PEC, escola e data identificáveis; nunca planos ou justificativas.
             categorias = ["Qualidade da Aula", "Desenvolvimento Curricular", "Multiplica",
@@ -2586,6 +2685,31 @@ def gps_ficha_escola(registro, agenda, termos, data_referencia=None, cadastro=No
             else:
                 campos = [c for c in ("Data", "PEC", "Horário", "Atividade", "Objetivo", "Situação", "Fonte") if c in dados]
                 st.dataframe(gps_formatar_datas_exibicao(dados[campos].sort_values("Data")), hide_index=True, use_container_width=True)
+        elif subitem == "Equipe gestora":
+            gestores = gps_gestores_escola(codigo)
+            if gestores is None:
+                st.info("Equipe gestora não localizada no cadastro enriquecido para este código SEDUC. Confira o código cadastral e a fonte.")
+            else:
+                for titulo, campo in (("Direção escolar", "diretor"),
+                                      ("Vice-direção", "vice_diretores"),
+                                      ("Coordenação pedagógica", "coordenadores_pedagogicos")):
+                    nomes = [n.strip() for n in str(gestores.get(campo, "")).split(";") if n.strip()]
+                    st.markdown(f"**{titulo}**")
+                    if nomes:
+                        for nome in nomes:
+                            st.write("• " + nome)
+                    else:
+                        st.caption("Não informado na ficha gerencial consultada.")
+                st.divider()
+                contato = str(gestores.get("telefone", "")).strip()
+                email = str(gestores.get("email_gestor", "")).strip()
+                if contato:
+                    st.write("**Telefone:** " + contato)
+                if email:
+                    st.write("**E-mail institucional:** " + email)
+                fonte = str(gestores.get("fonte_pdf", "")).strip()
+                consulta = str(gestores.get("data_consulta_pdf", "")).strip()
+                st.caption("Fonte: " + (fonte or "Cadastro enriquecido das escolas") + (" · Consulta: " + consulta if consulta else ""))
         elif subitem == "Dados da unidade":
             st.write(f'**Endereço:** {registro.get("logradouro", "Não informado")}, {registro.get("numero", "")}, {registro.get("municipio", "")}')
             lat, lon = registro.get("latitude"), registro.get("longitude")
@@ -2613,7 +2737,10 @@ def gps_ficha_escola(registro, agenda, termos, data_referencia=None, cadastro=No
                 cartao("👥 " + subitem, "—", "Sem dados por turma na base atualmente integrada", "blue")
                 st.info("Para visualizar turmas e turmas prioritárias, é necessária a base oficial detalhada por turma.")
         elif grupo == "📊 Avaliações":
-            cartao("📊 " + subitem, "—", "Sem dados oficiais sincronizados", "purple")
+            if subitem == "SARESP":
+                gps_exibir_saresp_2025(codigo)
+            else:
+                cartao("📊 " + subitem, "—", "Sem dados oficiais sincronizados", "purple")
         elif grupo == "💻 Plataformas Digitais":
             cartao("💻 " + subitem, "—", "Sem dados oficiais sincronizados", "teal")
         elif subitem == "Matrículas e turmas":
@@ -3303,11 +3430,17 @@ if pagina_gps == "🗺️ Mapa Territorial":
     filtrado["gps_frequencia"] = filtrado["frequencia_pct"].map(_gps_pct)
     filtrado["gps_farol"] = filtrado["codigo_seduc"].astype(str).map(
         lambda c: gps_cor_farol(c) or "SEM DADO")
+    # O tooltip do pydeck NÃO interpreta HTML passado em campos dinâmicos.
+    # Exibir apenas texto nos campos e deixar a formatação no HTML estático.
     filtrado["gps_aviso_farol"] = filtrado["gps_farol"].map(lambda cor:
-        '<div style="background:#ffe5e5;color:#a11620;border-radius:6px;padding:6px 8px;margin:5px 0;font-size:11px;font-weight:700">⚠ FAROL VERMELHO — ATENÇÃO PRIORITÁRIA<br><span style="font-weight:400">Avanço bem abaixo do esperado. Ver ações na ficha da escola.</span></div>' if cor == "VERMELHO" else
-        '<div style="font-size:11px;margin:4px 0;color:#d4f4e5">● FAROL SARESP — ' + cor + '</div>' if cor != "SEM DADO" else
-        '<div style="font-size:10px;color:#b6cbd4;margin:3px 0">Farol SARESP: aguardando dado oficial</div>')
-    filtrado["gps_prova"] = "—"
+        "🔴 FAROL SARESP · VERMELHO — ATENÇÃO PRIORITÁRIA" if cor == "VERMELHO" else
+        "🟡 FAROL SARESP · AMARELO" if cor == "AMARELO" else
+        "🟢 FAROL SARESP · VERDE" if cor == "VERDE" else
+        "🔵 FAROL SARESP · AZUL" if cor == "AZUL" else
+        "Farol SARESP: classificação oficial não disponível")
+    pp_gps = gps_prova_paulista_local()
+    pp_map = {} if pp_gps.empty else dict(zip(pp_gps["codigo_seduc"],pp_gps["acertos_pct"]))
+    filtrado["gps_prova"] = filtrado["codigo_seduc"].astype(str).map(lambda c: f"{float(pp_map[c]):.1f}%" if c in pp_map and pd.notna(pp_map[c]) else "—")
     filtrado["gps_lp"] = "—"
     filtrado["gps_mat"] = "—"
     # Um status por escola/data no cartão; em visitas múltiplas mostra
@@ -3365,7 +3498,7 @@ if pagina_gps == "🗺️ Mapa Territorial":
           <div style="font-size:11px;color:#fff;"><b>Ouro:</b> {gps_meta_ouro} &nbsp; <b>IFA:</b> {gps_meta_ifa}</div>
         </div>
       </div>
-      {gps_aviso_farol}
+      <div style="font-size:11px;font-weight:700;color:#d5eaf0;margin:4px 0 7px;">{gps_aviso_farol}</div>
       <div style="display:flex;gap:9px;align-items:flex-start;">
         <div style="flex:1 1 48%;min-width:0;font-size:12px;overflow-wrap:anywhere;">
           {gps_contato_ure}
@@ -3406,10 +3539,7 @@ if pagina_gps == "🗺️ Mapa Territorial":
         sede["gps_meta_ifa"] = _gps_escape(metas_por_codigo.get("URE", {}).get("ifa", "—") or "—")
         sede["gps_estilo_visita"] = "display:none;"
         sede["gps_aviso_farol"] = ""
-        sede["gps_contato_ure"] = ('<div style="margin-bottom:7px;"><b>Telefone:</b> '
-            '<a href="tel:+551338477050" style="color:#a7e3ff;">(13) 3847-7050</a></div>'
-            '<div><b>E-mail:</b> <a href="mailto:mir@educacao.sp.gov.br" '
-            'style="color:#a7e3ff;">mir@educacao.sp.gov.br</a></div>')
+        sede["gps_contato_ure"] = "Telefone: (13) 3847-7050 · E-mail: mir@educacao.sp.gov.br"
         sede["gps_nome"] = "UNIDADE REGIONAL DE ENSINO DE MIRACATU"
         sede["gps_municipio"] = "Miracatu/SP"
         sede["gps_seduc"] = "URE"
@@ -4264,6 +4394,26 @@ def gps_tres_visoes(df, identificador, titulo, metrica="Indicador (%)", cadastro
 
 # --- ABA 2: AVALIAÇÕES (COM SUBPASTAS DINÂMICAS E PROVA PAULISTA MAIS ATUAL) ---
 if destino_gps in ("SARESP", "Prova Paulista", "SAEB", "Avaliação Diagnóstica", "ENEM e Simulados"):
+    if destino_gps == "Prova Paulista":
+        _pp_regional = gps_prova_paulista_local()
+        if not _pp_regional.empty:
+            st.markdown("### Prova Paulista — 3º bimestre de 2026 · URE Miracatu")
+            _pp_visao = st.radio("Visualização da Prova Paulista", ["Geral URE", "Escola", "Turmas"], horizontal=True, key="gps_pp_visao_local")
+            if _pp_visao == "Geral URE":
+                st.dataframe(_pp_regional[[c for c in ["escola", "codigo_seduc", "total_alunos", "participacao_pct", "acertos_pct", "port_pct", "mat_pct"] if c in _pp_regional]], hide_index=True, use_container_width=True)
+            else:
+                _pp_escolas = dict(zip(_pp_regional["codigo_seduc"], _pp_regional["escola"]))
+                _pp_codigo = st.selectbox("Escola", list(_pp_escolas), format_func=lambda c: _pp_escolas[c], key="gps_pp_escola_local")
+                if _pp_visao == "Escola":
+                    gps_exibir_pp_escola(_pp_codigo)
+                else:
+                    _pp_turmas = gps_prova_paulista_local("turmas")
+                    _pp_turmas = _pp_turmas[_pp_turmas["codigo_seduc"] == _pp_codigo] if not _pp_turmas.empty else pd.DataFrame()
+                    if _pp_turmas.empty: st.info("Sem dados de turmas vinculados a esta escola.")
+                    else: st.dataframe(_pp_turmas.drop(columns=["codigo_seduc", "escola", "ano", "bimestre"], errors="ignore"), hide_index=True, use_container_width=True)
+        else:
+            st.info("Prova Paulista: publique os arquivos CSV no GitHub para visualizar os resultados.")
+
     st.subheader(f"📝 Avaliações — {pasta_atual} ({comp_atual})")
     exibir_banner_perfil_indicadores()
 
