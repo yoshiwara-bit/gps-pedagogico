@@ -2286,6 +2286,22 @@ def gps_agenda_planos(df_planos, cadastro):
     return pd.DataFrame(registros, columns=["codigo_seduc", "PEC", "Pasta", "Data", "Atividade", "Fonte", "Situação", "Objetivo", "Horário"])
 
 
+def gps_total_anual_termos(codigo_seduc, ano, termos, cadastro):
+    """Conta visitas comprovadas por termo, sem confundir planejamento e execução."""
+    if termos is None or termos.empty or not {"PEC", "Escola", "Data_Visita"}.issubset(termos.columns):
+        return 0
+    chaves = set()
+    for _, termo in termos.iterrows():
+        dia = gps_data_segura(termo.get("Data_Visita"))
+        pec = gps_chave_pec(termo.get("PEC", ""))
+        if dia is None or dia.year != ano or not pec:
+            continue
+        codigo = gps_identificar_escola(str(termo.get("Escola", "")), cadastro)
+        if str(codigo) == str(codigo_seduc):
+            chaves.add((str(codigo), pec, dia))
+    return len(chaves)
+
+
 def gps_ficha_escola(registro, agenda, termos, data_referencia=None, cadastro=None):
     """V11 Plus: painel da escola com menu lateral e cartões temáticos.
 
@@ -2440,8 +2456,8 @@ def gps_ficha_escola(registro, agenda, termos, data_referencia=None, cadastro=No
             dados = itens_dia if subitem == "Visitas do dia" else itens_mes
             a,b = st.columns(2)
             with a: cartao("📅 Visitas previstas", len(dados), "Conforme os planos efetivamente carregados", "teal")
-            with b: cartao("👤 PECs distintos", dados["PEC"].nunique() if not dados.empty and "PEC" in dados else 0,
-                           "PECs identificados na programação", "blue")
+            with b: cartao("📊 Visitas acumuladas no ano", gps_total_anual_termos(codigo, ano, termos, cadastro),
+                           "Visitas comprovadas por termos no ano", "blue")
             if dados.empty:
                 st.info("Nenhuma visita localizada nos documentos carregados para este período. Isso não comprova ausência de planejamento ou visita.")
             else:
@@ -2644,6 +2660,23 @@ if pagina_gps == "🗺️ Mapa Territorial":
     agenda_csv = gps_carregar_agenda_consolidada(cadastro)
     agenda = pd.concat([agenda_drive, agenda_csv], ignore_index=True).drop_duplicates(
         subset=["codigo_seduc", "PEC", "Data", "Atividade"], keep="last")
+
+    # Navegação direta: um clique no pino abre a ficha como tela principal,
+    # dispensando rolar a página abaixo do mapa.
+    _gps_ficha_aberta = str(st.session_state.get("gps_escola_detalhe_direto", ""))
+    if _gps_ficha_aberta:
+        _gps_registro = cadastro[cadastro["codigo_seduc"].astype(str) == _gps_ficha_aberta]
+        if not _gps_registro.empty:
+            if st.button("← Voltar ao mapa territorial", key="gps_voltar_mapa_ficha"):
+                st.session_state.pop("gps_escola_detalhe_direto", None)
+                st.session_state.pop("gps_escola_selecionada", None)
+                st.rerun()
+            st.caption("Ficha da escola selecionada no mapa")
+            _gps_data_ficha = st.session_state.get("gps_data_ultima_selecao", date.today())
+            gps_ficha_escola(_gps_registro.iloc[0], agenda, df_termos_drive,
+                             _gps_data_ficha, cadastro=cadastro)
+            st.stop()
+        st.session_state.pop("gps_escola_detalhe_direto", None)
 
     st.caption("Localização **prevista**, não rastreamento físico. Histórico documentado por termos e alterações justificadas quando disponíveis. Atualize as fontes para recalcular.")
     hoje_mapa = date.today()
@@ -2979,38 +3012,38 @@ if pagina_gps == "🗺️ Mapa Territorial":
     # O tooltip utiliza um único template HTML estático. A estrutura do Raio-X
     # segue o modelo aprovado, com quatro cartões coloridos em duas colunas.
     tooltip_html = """
-    <div style="width:292px;max-width:calc(100vw - 48px);font-family:Arial,sans-serif;color:#fff;line-height:1.22;">
-      <div style="font-size:19px;font-weight:800;margin-bottom:3px;">{gps_nome}</div>
-      <div style="font-size:14px;color:#e1eef3;font-weight:600;">Município: {gps_municipio} · SEDUC: {gps_seduc}</div>
-      <div style="border-top:1px solid #44606b;margin:6px 0;"></div>
+    <div style="width:258px;max-width:calc(100vw - 48px);font-family:Arial,sans-serif;color:#fff;line-height:1.18;">
+      <div style="font-size:17px;font-weight:800;margin-bottom:2px;">{gps_nome}</div>
+      <div style="font-size:13px;color:#e1eef3;font-weight:600;">Município: {gps_municipio} · SEDUC: {gps_seduc}</div>
+      <div style="border-top:1px solid #44606b;margin:4px 0;"></div>
       <div style="display:flex;justify-content:space-between;gap:5px;align-items:center;font-size:15px;">
         <b>Visitas na data: {gps_visitas}</b>
         <span style="background:#36505d;border-radius:12px;padding:2px 6px;font-size:13px;white-space:nowrap;">{gps_data}</span>
       </div>
-      <div style="margin-top:4px;font-size:15px;"><b>PEC:</b> {gps_pec}</div>
-      <div style="margin-top:3px;font-size:14px;"><b>Atividade:</b> {gps_atividade}</div>
-      <div style="margin-top:3px;font-size:14px;"><b>Objetivo:</b> {gps_objetivo}</div>
-      <div style="border-top:1px solid #44606b;margin:6px 0;"></div>
-      <div style="font-size:16px;font-weight:800;margin-bottom:5px;">Raio-X Pedagógico</div>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:5px;">
-        <div style="background:#dceffb;color:#174c73;padding:6px;border-radius:7px;">
-          <div style="font-size:13px;font-weight:700;">Frequência</div><div style="font-size:20px;font-weight:800;margin:1px 0;">{gps_frequencia}</div>
+      <div style="margin-top:2px;font-size:14px;"><b>PEC:</b> {gps_pec}</div>
+      <div style="margin-top:2px;font-size:14px;"><b>Atividade:</b> {gps_atividade}</div>
+      <div style="margin-top:2px;font-size:14px;"><b>Objetivo:</b> {gps_objetivo}</div>
+      <div style="border-top:1px solid #44606b;margin:4px 0;"></div>
+      <div style="font-size:15px;font-weight:800;margin-bottom:3px;">Raio-X Pedagógico</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;">
+        <div style="background:#dceffb;color:#174c73;padding:4px;border-radius:6px;">
+          <div style="font-size:13px;font-weight:700;">Frequência</div><div style="font-size:18px;font-weight:800;margin:0;">{gps_frequencia}</div>
           <div style="font-size:11px;">Farol: sem dados</div>
         </div>
-        <div style="background:#ede5fa;color:#60378f;padding:6px;border-radius:7px;">
-          <div style="font-size:13px;font-weight:700;">Prova Paulista</div><div style="font-size:20px;font-weight:800;margin:1px 0;">{gps_prova}</div>
+        <div style="background:#ede5fa;color:#60378f;padding:4px;border-radius:6px;">
+          <div style="font-size:13px;font-weight:700;">Prova Paulista</div><div style="font-size:18px;font-weight:800;margin:0;">{gps_prova}</div>
           <div style="font-size:11px;">Farol: sem dados</div>
         </div>
-        <div style="background:#fff0df;color:#88480f;padding:6px;border-radius:7px;">
-          <div style="font-size:13px;font-weight:700;">Língua Portuguesa</div><div style="font-size:20px;font-weight:800;margin:1px 0;">{gps_lp}</div>
+        <div style="background:#fff0df;color:#88480f;padding:4px;border-radius:6px;">
+          <div style="font-size:13px;font-weight:700;">Língua Portuguesa</div><div style="font-size:18px;font-weight:800;margin:0;">{gps_lp}</div>
           <div style="font-size:11px;">Abaixo do Básico</div>
         </div>
-        <div style="background:#dff3e9;color:#126443;padding:6px;border-radius:7px;">
-          <div style="font-size:13px;font-weight:700;">Matemática</div><div style="font-size:20px;font-weight:800;margin:1px 0;">{gps_mat}</div>
+        <div style="background:#dff3e9;color:#126443;padding:4px;border-radius:6px;">
+          <div style="font-size:13px;font-weight:700;">Matemática</div><div style="font-size:18px;font-weight:800;margin:0;">{gps_mat}</div>
           <div style="font-size:11px;">Abaixo do Básico</div>
         </div>
       </div>
-      <div style="border-top:1px solid #44606b;margin:6px 0 5px;"></div>
+      <div style="border-top:1px solid #44606b;margin:4px 0 3px;"></div>
       <div style="font-size:14px;color:#e1eef3;"><b>Distância rodoviária da URE:</b> {gps_distancia}</div>
     </div>"""
     # A sede tem dados próprios; placeholders comuns são preenchidos para que
@@ -3041,8 +3074,9 @@ if pagina_gps == "🗺️ Mapa Territorial":
                                  size_max_pixels=48, billboard=True, pickable=True, auto_highlight=True, id="sede_ure"))
     tooltip = {"html":tooltip_html,
                "style":{"backgroundColor":"#17313d","color":"white","fontSize":"13px",
-                        "maxWidth":"315px","borderRadius":"12px","padding":"7px",
-                        "maxHeight":"min(75vh, 500px)","overflowY":"auto"}}
+                        "maxWidth":"272px","borderRadius":"10px","padding":"5px",
+                        "maxHeight":"225px","overflowY":"auto","overflowX":"hidden",
+                        "boxSizing":"border-box"}}
     vista = pdk.ViewState(latitude=float(filtrado.latitude.mean()),longitude=float(filtrado.longitude.mean()),zoom=9 if municipio=="Todos" else 11)
     evento = st.pydeck_chart(pdk.Deck(layers=camadas,initial_view_state=vista,tooltip=tooltip,map_style=None),
                              use_container_width=True,on_select="rerun",selection_mode="single-object",key="gps_mapa_selecao")
@@ -3065,6 +3099,12 @@ if pagina_gps == "🗺️ Mapa Territorial":
         key="gps_mapa_escola_ficha")
     if codigo_escolhido:
         selecionado = codigo_escolhido
+    # A seleção do IconLayer dispara rerun; na nova execução, a ficha substitui
+    # a visualização do mapa. O mesmo vale para a seleção acessível por lista.
+    if selecionado and selecionado in set(cadastro["codigo_seduc"].astype(str)):
+        st.session_state["gps_escola_detalhe_direto"] = selecionado
+        st.session_state["gps_data_ultima_selecao"] = data_ref
+        st.rerun()
     st.subheader(f"📅 Visitas e atividades — {data_ref.strftime('%d/%m/%Y')}")
     if visitas_periodo.empty:
         st.info("Nenhuma visita encontrada para esta data nos documentos atualmente carregados. Isso não comprova ausência de atividade.")
