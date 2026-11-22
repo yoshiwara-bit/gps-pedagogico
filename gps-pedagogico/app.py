@@ -23,6 +23,24 @@ import holidays
 from icalendar import Calendar as ICalCalendar
 
 
+# Logos enviados pelo usuário: renderização proporcional e discreta.
+LOGOS_GPS = {
+    "Tarefa SP":"tarefa_sp.png", "Leia SP":"leia_sp.png",
+    "Redação Paulista":"redacao_paulista.png", "Matific Anos Iniciais":"matific_anos_iniciais.png",
+    "Elefante Letrado":"elefante_letrado.png", "Khan Academy":"khan_academy.png",
+    "Speak":"speak.png", "Open English":"open_english.png", "Alura":"alura.png",
+    "Robótica":"robotica.png", "Aluno Presente":"aluno_presente.png",
+    "SARESP":"saresp.png", "SAEB":"saeb.png", "Avaliação Diagnóstica":"avaliacao_diagnostica.png",
+    "ENEM":"enem.png", "Provão Paulista Seriado":"provao_paulista.png",
+    "Prova Paulista 1º B":"prova_paulista_1b.png",
+    "Prova Paulista 2º B":"prova_paulista_2b.png",
+    "Prova Paulista 3º B":"prova_paulista_3b.png",
+}
+def gps_logo(nome, largura=116):
+    arquivo = pathlib.Path(__file__).resolve().parent / "logos_plataformas" / LOGOS_GPS.get(nome, "")
+    if arquivo.is_file():
+        st.image(str(arquivo), width=largura)
+
 # ==============================================================================
 # FAROL SARESP OFICIAL — classificação externa, nunca calculada por acertos
 # ==============================================================================
@@ -2704,17 +2722,66 @@ def gps_ficha_escola(registro, agenda, termos, data_referencia=None, cadastro=No
                 contato = str(gestores.get("telefone", "")).strip()
                 email = str(gestores.get("email_gestor", "")).strip()
                 if contato:
-                    st.write("**Telefone:** " + contato)
+                    st.markdown("**Telefone:** [" + contato + "](tel:+55" + re.sub(r"\D", "", contato) + ")")
                 if email:
-                    st.write("**E-mail institucional:** " + email)
+                    st.markdown("**E-mail institucional:** [" + email + "](mailto:" + email + ")")
                 fonte = str(gestores.get("fonte_pdf", "")).strip()
                 consulta = str(gestores.get("data_consulta_pdf", "")).strip()
                 st.caption("Fonte: " + (fonte or "Cadastro enriquecido das escolas") + (" · Consulta: " + consulta if consulta else ""))
         elif subitem == "Dados da unidade":
-            st.write(f'**Endereço:** {registro.get("logradouro", "Não informado")}, {registro.get("numero", "")}, {registro.get("municipio", "")}')
+            # Cadastro enriquecido extraído das fichas gerenciais oficiais.
+            # A vinculação é exclusivamente pelo código SEDUC.
+            import urllib.parse
+            detalhes = gps_gestores_escola(codigo)
+
+            def dado_cadastral(campo, alternativa=""):
+                valor = detalhes.get(campo, "") if detalhes is not None else ""
+                valor = str(valor).strip() if pd.notna(valor) else ""
+                if valor.lower() in ("nan", "none", "null"):
+                    valor = ""
+                return valor or alternativa
+
+            def linha_dado(rotulo, valor):
+                if valor:
+                    st.markdown(f"**{rotulo}:** {valor}")
+
+            logradouro = dado_cadastral("logradouro_pdf", str(registro.get("logradouro", "")).strip())
+            numero = dado_cadastral("numero_pdf", str(registro.get("numero", "")).strip())
+            bairro = dado_cadastral("bairro")
+            municipio = dado_cadastral("municipio_pdf", str(registro.get("municipio", "")).strip())
+            endereco = ", ".join(v for v in (logradouro, numero, bairro, municipio) if v)
+            linha_dado("Endereço", endereco)
+            cep = re.sub(r"\D", "", dado_cadastral("cep"))
+            if len(cep) == 8:
+                cep = f"{cep[:5]}-{cep[5:]}"
+            linha_dado("CEP", cep)
+            linha_dado("Zona", dado_cadastral("zona").capitalize())
+            linha_dado("Distrito", dado_cadastral("distrito", municipio))
+            linha_dado("Bairro", bairro)
+
+            telefone = dado_cadastral("telefone")
+            digitos = re.sub(r"\D", "", telefone)
+            if telefone:
+                if len(digitos) in (10, 11):
+                    st.markdown(f"**Telefone:** [{telefone}](tel:+55{digitos})")
+                else:
+                    linha_dado("Telefone", telefone)
+            for rotulo, campo in (("E-mail gestor", "email_gestor"), ("E-mail pedagógico", "email_pedagogico")):
+                email = dado_cadastral(campo)
+                if email and re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", email):
+                    st.markdown(f"**{rotulo}:** [{email}](mailto:{urllib.parse.quote(email, safe='@.')})")
+                elif email:
+                    linha_dado(rotulo, email)
+
             lat, lon = registro.get("latitude"), registro.get("longitude")
             if pd.notna(lat) and pd.notna(lon):
                 st.link_button("📍 Ver rota no Google Maps", f"https://www.google.com/maps/dir/?api=1&destination={lat},{lon}")
+            if detalhes is not None:
+                fonte = dado_cadastral("fonte_pdf", "Ficha gerencial SEDUC")
+                consulta = dado_cadastral("data_consulta_pdf")
+                st.caption(f"Fonte: {fonte}" + (f" · Consulta: {consulta}" if consulta else ""))
+            else:
+                st.caption("Dados complementares não localizados para este código SEDUC no cadastro enriquecido.")
         elif subitem == "Termos de Visita":
             if termos is None or termos.empty or "Escola" not in termos:
                 st.info("Nenhum Termo de Visita validado disponível nesta fonte.")
@@ -2731,18 +2798,168 @@ def gps_ficha_escola(registro, agenda, termos, data_referencia=None, cadastro=No
         elif subitem == "Justificativas":
             st.info("As justificativas serão exibidas após importação e vinculação segura por PEC, escola e data.")
         elif grupo == "👥 Frequência Escolar":
-            if subitem == "Frequência geral" and _frequencia_ficha is not None:
-                cartao("👥 Frequência geral", f"{_frequencia_ficha:.1f}%".replace(".", ","), "Base consolidada de frequência escolar 2026", "blue")
+            gps_logo("Aluno Presente", largura=110)
+            st.markdown("**Período de referência**")
+            _periodo_freq = st.radio(
+                "Consultar frequência por", ["Semana", "Mês", "Acumulado do ano"],
+                horizontal=True, key="gps_ficha_frequencia_periodo"
+            )
+            _raiz_freq = pathlib.Path(__file__).resolve().parent
+            @st.cache_data(ttl=300, show_spinner=False)
+            def _gps_ler_turmas_frequencia():
+                p = pathlib.Path(__file__).resolve().parent / "GPS_frequencia_turmas_2026.csv"
+                if not p.is_file():
+                    return pd.DataFrame()
+                d = pd.read_csv(p, dtype={"codigo_seduc": str, "id_turma": str}, encoding="utf-8-sig")
+                d["frequencia_pct"] = pd.to_numeric(d["frequencia_pct"], errors="coerce")
+                return d.dropna(subset=["frequencia_pct"])
+            @st.cache_data(ttl=300, show_spinner=False)
+            def _gps_ler_prova_turmas():
+                p = pathlib.Path(__file__).resolve().parent / "GPS_prova_paulista_2026_3b_turmas.csv"
+                if not p.is_file():
+                    return pd.DataFrame()
+                d = pd.read_csv(p, dtype={"codigo_seduc": str}, encoding="utf-8-sig")
+                d["acertos_pct"] = pd.to_numeric(d["acertos_pct"], errors="coerce")
+                return d.dropna(subset=["acertos_pct"])
+            _freq_t = _gps_ler_turmas_frequencia()
+            _prova_t = _gps_ler_prova_turmas()
+            _cod = str(codigo).strip()
+            if not _freq_t.empty:
+                _freq_t = _freq_t[_freq_t["codigo_seduc"].str.strip() == _cod].copy()
+            if not _prova_t.empty:
+                _prova_t = _prova_t[_prova_t["codigo_seduc"].str.strip() == _cod].copy()
+            _periodos_reais = sorted(_freq_t["periodo"].dropna().astype(str).unique().tolist()) if not _freq_t.empty else []
+            if _periodo_freq == "Semana" and _periodos_reais:
+                _periodo_escolhido = st.selectbox("Semana disponível", _periodos_reais,
+                                                   index=len(_periodos_reais)-1, key="gps_ficha_semana_turma")
+                _freq_t = _freq_t[_freq_t["periodo"].astype(str) == _periodo_escolhido]
+                st.caption("Frequência por turma · " + _periodo_escolhido)
+            elif _periodo_freq != "Semana":
+                st.info("A base de turmas disponível é semanal. Não há série mensal ou acumulada validada para este filtro.")
+                _freq_t = pd.DataFrame()
+            elif not _periodos_reais:
+                st.info("Arquivo de frequência por turma não disponível para esta escola.")
+            def _gps_ranking_turmas(df, coluna, titulo, legenda):
+                st.markdown("**" + titulo + "**")
+                if df.empty:
+                    st.caption("Sem dados oficiais para este recorte.")
+                    return
+                base = df[["turma", coluna]].dropna().copy()
+                base = base.sort_values([coluna, "turma"], ascending=[True, True])
+                if base.empty:
+                    st.caption("Sem valores disponíveis.")
+                    return
+                c1, c2 = st.columns(2)
+                with c1:
+                    st.markdown("**3 prioritárias (menores resultados)**")
+                    st.dataframe(base.head(3).rename(columns={coluna: legenda}),
+                                 hide_index=True, use_container_width=True)
+                with c2:
+                    st.markdown("**3 destaques (maiores resultados)**")
+                    st.dataframe(base.tail(3).sort_values(coluna, ascending=False).rename(columns={coluna: legenda}),
+                                 hide_index=True, use_container_width=True)
+            if subitem == "Frequência geral":
+                if not _freq_t.empty and "matriculas_ativas" in _freq_t:
+                    _pesos = pd.to_numeric(_freq_t["matriculas_ativas"], errors="coerce").fillna(0)
+                    _media = (_freq_t["frequencia_pct"] * _pesos).sum() / _pesos.sum() if _pesos.sum() else _freq_t["frequencia_pct"].mean()
+                    cartao("👥 Frequência geral", f"{_media:.1f}%".replace(".", ","),
+                           _periodo_escolhido, "blue")
+                elif _periodo_freq == "Semana" and _frequencia_ficha is not None:
+                    cartao("👥 Frequência consolidada", f"{_frequencia_ficha:.1f}%".replace(".", ","),
+                           "Período não identificado na base consolidada", "blue")
             else:
-                cartao("👥 " + subitem, "—", "Sem dados por turma na base atualmente integrada", "blue")
-                st.info("Para visualizar turmas e turmas prioritárias, é necessária a base oficial detalhada por turma.")
+                if subitem == "Frequência por turma":
+                    st.markdown("**Todas as turmas — frequência**")
+                    if not _freq_t.empty:
+                        st.dataframe(_freq_t[["turma", "frequencia_pct", "matriculas_ativas"]]
+                                     .sort_values("frequencia_pct")
+                                     .rename(columns={"turma": "Turma", "frequencia_pct": "Frequência (%)",
+                                                      "matriculas_ativas": "Matrículas ativas"}),
+                                     hide_index=True, use_container_width=True)
+                    else:
+                        st.info("Sem frequência por turma para o período selecionado.")
+                _gps_ranking_turmas(_freq_t, "frequencia_pct", "Frequência escolar", "Frequência (%)")
+                _gps_ranking_turmas(_prova_t, "acertos_pct", "Desempenho — Prova Paulista (3º bimestre/2026)", "Acertos (%)")
+                st.caption("A Prova Paulista informa percentual de acertos, não proficiência SARESP. "
+                           "Os rankings são independentes e não misturam as duas medidas.")
         elif grupo == "📊 Avaliações":
+            _logos_av = {"SARESP":"SARESP", "SAEB":"SAEB", "Avaliação Diagnóstica":"Avaliação Diagnóstica", "ENEM e Simulados":"ENEM", "Prova Paulista":"Prova Paulista 3º B"}
+            if subitem in _logos_av: gps_logo(_logos_av[subitem], largura=125)
             if subitem == "SARESP":
                 gps_exibir_saresp_2025(codigo)
             else:
                 cartao("📊 " + subitem, "—", "Sem dados oficiais sincronizados", "purple")
         elif grupo == "💻 Plataformas Digitais":
-            cartao("💻 " + subitem, "—", "Sem dados oficiais sincronizados", "teal")
+            plataformas = ["Tarefa SP", "Leia SP", "Redação Paulista", "Matific Anos Iniciais", "Elefante Letrado", "Khan Academy", "Speak", "Open English", "Alura", "Robótica"]
+            logos = {"Tarefa SP":"tarefa_sp.png", "Leia SP":"leia_sp.png", "Redação Paulista":"redacao_paulista.png", "Matific":"matific.png", "Khan Academy":"khan_academy.png", "Speak / Open English":"speak_open_english.png", "Alura e Tecnologia":"alura.png"}
+            @st.cache_data(ttl=300, show_spinner=False)
+            def _gps_plataformas_csv():
+                p = pathlib.Path(__file__).resolve().parent / "GPS_plataformas_escolas_2026.csv"
+                if not p.exists(): return pd.DataFrame()
+                try:
+                    d = pd.read_csv(p, dtype={"codigo_seduc":str,"turma":str}, encoding="utf-8-sig")
+                    if not {"codigo_seduc","plataforma","periodo"}.issubset(d.columns): return pd.DataFrame()
+                    d["codigo_seduc"] = d["codigo_seduc"].astype(str).str.strip()
+                    return d
+                except (OSError, ValueError, pd.errors.ParserError): return pd.DataFrame()
+            base = _gps_plataformas_csv()
+            nivel = st.radio("Abrangência", ["URE", "Escola", "Turma"], horizontal=True,
+                             index=1, key="gps_plataformas_nivel")
+            dados = base.copy()
+            if nivel in ("Escola", "Turma") and not dados.empty:
+                dados = dados[dados["codigo_seduc"] == str(codigo).strip()].copy()
+            if nivel == "Turma":
+                if dados.empty or "turma" not in dados.columns or not dados["turma"].notna().any():
+                    st.info("Não há resultados oficiais por turma nesta base.")
+                    dados = pd.DataFrame()
+                else:
+                    turma_opcoes = sorted(dados["turma"].dropna().astype(str).unique())
+                    turma_atual = st.selectbox("Turma", turma_opcoes, key="gps_plataformas_turma")
+                    dados = dados[dados["turma"].astype(str) == turma_atual]
+            if not dados.empty:
+                periodos = sorted(dados["periodo"].dropna().astype(str).unique())
+                if periodos:
+                    periodo_plat = st.selectbox("Período", periodos, index=len(periodos)-1,
+                                               key="gps_plataformas_periodo")
+                    dados = dados[dados["periodo"].astype(str) == periodo_plat]
+            # Plataformas de Anos Iniciais: apenas Elvira, Clay e Raposo.
+            _ai_plataformas = {"Matific Anos Iniciais", "Elefante Letrado"}
+            _nome_escola_gps = str(nome_escola if "nome_escola" in locals() else escola).upper()
+            _ai_elegivel = any(x in _nome_escola_gps for x in ("ELVIRA", "CLAY", "RAPOSO"))
+            if nivel != "URE" and not _ai_elegivel:
+                plataformas = [p for p in plataformas if p not in _ai_plataformas]
+                if not dados.empty:
+                    dados = dados[~dados["plataforma"].isin(_ai_plataformas)]
+            st.caption("Dados oficiais por plataforma · valores ausentes não equivalem a zero")
+            if nivel == "URE":
+                st.caption("Matific Anos Iniciais e Elefante Letrado: abrangência restrita às escolas Elvira, Clay e Raposo.")
+            if subitem == "Visão geral":
+                st.subheader("Plataformas digitais — " + nivel)
+                for i in range(0,len(plataformas),2):
+                    colunas = st.columns(2)
+                    for col,nome in zip(colunas,plataformas[i:i+2]):
+                        with col:
+                            gps_logo(nome, largura=108)
+                            st.markdown("**"+nome+"**")
+                            rec = dados[dados["plataforma"].astype(str).str.casefold()==nome.casefold()] if not dados.empty else pd.DataFrame()
+                            if rec.empty:
+                                st.caption("Aguardando dados oficiais")
+                            else:
+                                # Não calcular média de percentuais sem denominador oficial.
+                                for campo,rotulo in [("acessos","Acessos"),("participacao_pct","Participação (%)"),("atividades_realizadas","Atividades realizadas"),("desempenho_pct","Desempenho (%)")]:
+                                    if campo not in rec: continue
+                                    valores = pd.to_numeric(rec[campo],errors="coerce").dropna()
+                                    if valores.empty: continue
+                                    if nivel == "URE" and len(rec)>1:
+                                        if campo in ("acessos","atividades_realizadas"):
+                                            st.write(f"{rotulo}: **{valores.sum():g}** (soma dos registros)")
+                                        else: st.caption(f"{rotulo}: consultar por escola; consolidação exige ponderação oficial")
+                                    else: st.write(f"{rotulo}: **{valores.iloc[-1]:g}**")
+                if base.empty: st.info("Adicione o CSV de resultados oficiais para preencher o painel.")
+            else:
+                rec = dados[dados["plataforma"].astype(str).str.casefold()==subitem.casefold()] if not dados.empty else pd.DataFrame()
+                if rec.empty: cartao("💻 " + subitem,"—","Aguardando dados oficiais", "teal")
+                else: st.dataframe(rec.drop(columns=["codigo_seduc"],errors="ignore"),hide_index=True,use_container_width=True)
         elif subitem == "Matrículas e turmas":
             if _matriculas_ficha is not None:
                 cartao("🏫 Matrículas ativas", f"{int(_matriculas_ficha):,}".replace(",", "."), "Base consolidada de frequência escolar 2026", "blue")
@@ -3440,7 +3657,7 @@ if pagina_gps == "🗺️ Mapa Territorial":
         "Farol SARESP: classificação oficial não disponível")
     pp_gps = gps_prova_paulista_local()
     pp_map = {} if pp_gps.empty else dict(zip(pp_gps["codigo_seduc"],pp_gps["acertos_pct"]))
-    filtrado["gps_prova"] = filtrado["codigo_seduc"].astype(str).map(lambda c: f"{float(pp_map[c]):.1f}%" if c in pp_map and pd.notna(pp_map[c]) else "—")
+    filtrado["gps_prova"] = filtrado["codigo_seduc"].astype(str).map(lambda c: f"{float(pp_map[c]):.1f}%".replace(".", ",") if c in pp_map and pd.notna(pp_map[c]) else "—")
     filtrado["gps_lp"] = "—"
     filtrado["gps_mat"] = "—"
     # Um status por escola/data no cartão; em visitas múltiplas mostra
@@ -3455,6 +3672,8 @@ if pagina_gps == "🗺️ Mapa Territorial":
         lambda cod: " / ".join(sorted(status_por_escola.get(cod, []))) or "Sem visita agendada")
     filtrado["gps_estilo_visita"] = ""
     filtrado["gps_contato_ure"] = ""
+    filtrado["gps_contato_display"] = "none"
+    filtrado["gps_visitas_display"] = "flex"
     filtrado["gps_pec"] = "Não informado"
     filtrado["gps_atividade"] = "Nenhuma visita registrada na data"
     filtrado["gps_objetivo"] = "—"
@@ -3501,15 +3720,19 @@ if pagina_gps == "🗺️ Mapa Territorial":
       <div style="font-size:11px;font-weight:700;color:#d5eaf0;margin:4px 0 7px;">{gps_aviso_farol}</div>
       <div style="display:flex;gap:9px;align-items:flex-start;">
         <div style="flex:1 1 48%;min-width:0;font-size:12px;overflow-wrap:anywhere;">
-          {gps_contato_ure}
-          <div style="{gps_estilo_visita}display:flex;justify-content:space-between;gap:4px;align-items:center;margin-bottom:4px;">
+          <div style="display:{gps_contato_display};font-size:11px;line-height:1.45;margin-bottom:5px;">
+            <div>Telefone: <a href="tel:+551338477050" style="color:#fff;text-decoration:underline;">(13) 3847-7050</a></div>
+            <div>E-mail:</div>
+            <div><a href="mailto:mir@educacao.sp.gov.br" style="color:#fff;text-decoration:underline;">mir@educacao.sp.gov.br</a></div>
+          </div>
+          <div style="display:{gps_visitas_display};justify-content:space-between;gap:4px;align-items:center;margin-bottom:4px;">
             <b>Visitas: {gps_visitas}</b>
             <span style="background:#36505d;border-radius:9px;padding:2px 4px;font-size:10px;white-space:nowrap;">{gps_data}</span>
           </div>
-          <div style="{gps_estilo_visita}margin-bottom:3px;"><b>Status:</b> {gps_status}</div>
-          <div style="{gps_estilo_visita}margin-bottom:3px;"><b>PEC:</b> {gps_pec}</div>
-          <div style="{gps_estilo_visita}margin-bottom:3px;"><b>Atividade:</b> {gps_atividade}</div>
-          <div style="{gps_estilo_visita}"><b>Objetivo:</b> {gps_objetivo}</div>
+          <div style="display:{gps_visitas_display};margin-bottom:3px;"><b>Status:</b> {gps_status}</div>
+          <div style="display:{gps_visitas_display};margin-bottom:3px;"><b>PEC:</b> {gps_pec}</div>
+          <div style="display:{gps_visitas_display};margin-bottom:3px;"><b>Atividade:</b> {gps_atividade}</div>
+          <div style="display:{gps_visitas_display};"><b>Objetivo:</b> {gps_objetivo}</div>
         </div>
         <div style="flex:1 1 52%;min-width:0;">
           <div style="font-size:12px;font-weight:800;margin-bottom:4px;">Raio-X Pedagógico</div>
@@ -3539,7 +3762,9 @@ if pagina_gps == "🗺️ Mapa Territorial":
         sede["gps_meta_ifa"] = _gps_escape(metas_por_codigo.get("URE", {}).get("ifa", "—") or "—")
         sede["gps_estilo_visita"] = "display:none;"
         sede["gps_aviso_farol"] = ""
-        sede["gps_contato_ure"] = "Telefone: (13) 3847-7050 · E-mail: mir@educacao.sp.gov.br"
+        sede["gps_contato_ure"] = ""
+        sede["gps_contato_display"] = "block"
+        sede["gps_visitas_display"] = "none"
         sede["gps_nome"] = "UNIDADE REGIONAL DE ENSINO DE MIRACATU"
         sede["gps_municipio"] = "Miracatu/SP"
         sede["gps_seduc"] = "URE"
@@ -3549,8 +3774,29 @@ if pagina_gps == "🗺️ Mapa Territorial":
         sede["gps_pec"] = "Sede administrativa"
         sede["gps_atividade"] = "Telefone: (13) 3847-7050"
         sede["gps_objetivo"] = "E-mail: mir@educacao.sp.gov.br"
+        # Consolidação regional por matrícula/alunos, sem inventar dados.
+        # A média da PP é estimada a partir dos percentuais por escola;
+        # não substitui a taxa oficial calculada por avaliação.
+        freq_base_path = pathlib.Path(__file__).resolve().parent / "GPS_frequencia_escolas_2026.csv"
         sede["gps_frequencia"] = "—"
+        if freq_base_path.exists():
+            try:
+                _fr = pd.read_csv(freq_base_path, encoding="utf-8-sig", dtype={"codigo_seduc": str})
+                _fr["frequencia_pct"] = pd.to_numeric(_fr["frequencia_pct"], errors="coerce")
+                _fr["matriculas_ativas"] = pd.to_numeric(_fr["matriculas_ativas"], errors="coerce")
+                _fr = _fr[_fr["frequencia_pct"].between(0, 100) & (_fr["matriculas_ativas"] > 0)]
+                if not _fr.empty:
+                    sede["gps_frequencia"] = _gps_pct((_fr["frequencia_pct"] * _fr["matriculas_ativas"]).sum() / _fr["matriculas_ativas"].sum())
+            except (OSError, ValueError, KeyError, pd.errors.ParserError):
+                pass
         sede["gps_prova"] = "—"
+        if not pp_gps.empty and {"acertos_pct", "total_alunos"}.issubset(pp_gps.columns):
+            _pp = pp_gps.copy()
+            _pp["acertos_pct"] = pd.to_numeric(_pp["acertos_pct"], errors="coerce")
+            _pp["total_alunos"] = pd.to_numeric(_pp["total_alunos"], errors="coerce")
+            _pp = _pp[_pp["acertos_pct"].between(0, 100) & (_pp["total_alunos"] > 0)]
+            if not _pp.empty:
+                sede["gps_prova"] = _gps_pct((_pp["acertos_pct"] * _pp["total_alunos"]).sum() / _pp["total_alunos"].sum())
         sede["gps_lp"] = "—"
         sede["gps_mat"] = "—"
         sede["gps_distancia"] = "0 km (sede)"
