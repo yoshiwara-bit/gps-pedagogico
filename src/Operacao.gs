@@ -3,7 +3,8 @@ function gpsAtividadesBase_(base, hoje) {
     gpsTabela_(base, aba).registros.filter(r => gpsDataValida_(r.data)).map(r => ({ ...r, tipo })));
   const evidencias = gpsTabela_(base, 'comprovantes').registros.concat(
     gpsTabela_(base, 'termos_web').registros.map(r => ({ ...r, validado: true })));
-  return gpsCruzarVisitas_(atividades, evidencias, hoje);
+  const decisoes = gpsTabela_(base, 'decisoes_visita').registros;
+  return gpsCruzarVisitas_(gpsAplicarDecisoesVisita_(atividades, decisoes), evidencias, hoje);
 }
 
 function gpsPrioridadesBase_(base, ano) {
@@ -75,12 +76,15 @@ function gpsSalvarTermo(dados) {
     const { base, perfil } = gpsSessao_();
     if (perfil.papel === 'AT') throw new Error('Perfil de consulta');
     const visita = gpsTabela_(base, 'visitas').registros.find(r => r.id === dados.visita_id && r.pec_id === perfil.pec_id);
-    if (!visita || visita.data > gpsHoje_() || visita.status === 'cancelada') throw new Error('Visita indisponível');
+    const confirmadaNaoRealizada = gpsTabela_(base, 'decisoes_visita').registros.some(r =>
+      r.visita_id === dados.visita_id && r.decisao === 'nao_ocorreu');
+    if (!visita || visita.data > gpsHoje_() || visita.status === 'cancelada' || confirmadaNaoRealizada) throw new Error('Visita indisponível');
     if (!['termo_visita', 'ficha_visita'].includes(dados.tipo)) throw new Error('Tipo de evidência inválido');
     const id = gpsChave_('termo_web', visita.id, dados.tipo);
     gpsAnexar_(base, 'termos_web', [{ id, visita_id: visita.id, pec_id: perfil.pec_id,
       tipo: dados.tipo, observacao: gpsTextoWeb_(dados.observacao) }]);
     gpsAuditar_(base, 'termos_web', id, 'registro_web', perfil.id);
+    if (dados.tipo === 'termo_visita') gpsResolverAlertaTermo_(base, visita);
     return { id };
   });
 }
@@ -92,15 +96,17 @@ function gpsMinhasOpcoes() {
   const opcoes = (tabela, ids) => gpsTabela_(base, tabela).registros.filter(r => !ids || ids.has(r.id))
     .map(r => ({ id: r.id, nome: r.nome || r.codigo || r.id }));
   const escolas = new Set(atribuicoes.map(r => r.escola_id));
+  const escolasOpcoes = opcoes('escolas', escolas);
+  const nomesEscolas = new Map(escolasOpcoes.map(r => [r.id, r.nome]));
   return {
-    papel: perfil.papel, escolas: opcoes('escolas', escolas),
+    papel: perfil.papel, escolas: escolasOpcoes,
     pastas: opcoes('pastas', new Set(atribuicoes.map(r => r.pasta_id))),
     componentes: opcoes('componentes'),
     turmas: gpsTabela_(base, 'turmas').registros.filter(r => escolas.has(r.escola_id))
       .map(r => ({ id: r.id, nome: r.codigo || r.id, escola_id: r.escola_id })),
     visitas: gpsTabela_(base, 'visitas').registros.filter(r => r.pec_id === perfil.pec_id &&
       r.status !== 'cancelada' && r.data <= gpsHoje_()).slice(-100)
-      .map(r => ({ id: r.id, nome: r.data + ' · ' + r.escola_id }))
+      .map(r => ({ id: r.id, nome: r.data + ' · ' + (nomesEscolas.get(r.escola_id) || 'Escola sem cadastro na atribuição') }))
   };
 }
 
@@ -115,5 +121,45 @@ function gpsRevisarIndicador(dados) {
     gpsAuditar_(base, 'indicadores', item.id, 'validado:' + gpsChave_(valor), perfil.id);
     gpsAtualizarEstado_(base, 'indicadores', item, { ...item, valor, revisar: false });
     return { id: item.id };
+  });
+}
+
+
+function gpsAplicarDecisoesVisita_(atividades, decisoes) {
+  const porVisita = new Map(decisoes.map(r => [r.visita_id, r.decisao]));
+  return atividades.map(r => {
+    if (r.tipo !== 'visita') return r;
+    const decisao = porVisita.get(r.id);
+    return decisao === 'nao_ocorreu' ? { ...r, status: 'cancelada', decisao } : decisao ? { ...r, decisao } : r;
+  });
+}
+
+function gpsRegistrarDecisaoVisita(dados) {
+  return gpsComTrava_(() => {
+    const { base, perfil } = gpsSessao_();
+    if (perfil.papel !== 'PEC' || !['termo_atrasado', 'nao_ocorreu'].includes(dados?.decisao)) {
+      throw new Error('Decisão de visita indisponível');
+    }
+    const hoje = gpsHoje_();
+    const visita = gpsAtividadesBase_(base, hoje).find(r => r.tipo === 'visita' &&
+      r.id === dados.visita_id && r.pec_id === perfil.pec_id);
+    if (!visita) throw new Error('Visita indisponível para esta decisão.');
+    const id = gpsChave_('decisao_visita', visita.id, dados.decisao);
+    const existente = gpsTabela_(base, 'decisoes_visita').registros.find(r => r.id === id);
+    if (existente) {
+      gpsAuditar_(base, 'decisoes_visita', id, dados.decisao, perfil.id);
+      if (dados.decisao === 'nao_ocorreu') gpsResolverAlertaTermo_(base, visita);
+      return { id };
+    }
+    if (!visita.aguardandoTermo || (Date.parse(hoje) - Date.parse(visita.data)) < 7 * 86400000 ||
+        (dados.decisao === 'nao_ocorreu' && visita.comprovada)) {
+      throw new Error('Visita indisponível para esta decisão. Confirme a data e as evidências.');
+    }
+    const motivo = dados.decisao === 'nao_ocorreu' ? gpsTextoWeb_(dados.motivo) : '';
+    gpsAnexar_(base, 'decisoes_visita', [{ id, visita_id: visita.id, pec_id: perfil.pec_id,
+      decisao: dados.decisao, motivo, instante: new Date().toISOString() }]);
+    gpsAuditar_(base, 'decisoes_visita', id, dados.decisao, perfil.id);
+    if (dados.decisao === 'nao_ocorreu') gpsResolverAlertaTermo_(base, visita);
+    return { id };
   });
 }

@@ -28,7 +28,7 @@ function instalarRpcFalso(papel) {
     gpsMinhasOpcoes: { papel, escolas: papel === 'PEC' ? escolas : [], pastas: [{ id: 'P', nome: 'Pasta fictícia' }],
       componentes: [{ id: 'LP', nome: 'Português' }], turmas: [], visitas: [{ id: 'V', nome: 'Visita fictícia' }] },
     gpsMeusAlertas: papel === 'PEC' ? [{ id: 'L', tipo: 'termo_pendente', periodo: '2026-11-25' }] : [],
-    gpsCarregarPainel: { campos: ['Farol'], linhas: [['Vermelho']], proximo: null },
+    gpsCarregarPainel: { campos: ['Farol'], linhas: [[{ cor: 'vermelho', texto: 'Abaixo do Básico' }]], proximo: null },
     gpsAvisosFormulario: { prioridades: 1, alinhadas: 1 },
     gpsSalvarPlano: { id: 'V' }
   };
@@ -73,8 +73,18 @@ function instalarRpcFalso(papel) {
       assert.equal(await page.locator('#gps-mapa circle').count(), total);
       await page.locator('#gps-mapa circle').first().click();
       await page.waitForFunction(() => document.querySelectorAll('#gps-mapa circle').length === 1);
+      await page.locator('#gps-ficha').getByText('Escola fictícia 1').waitFor();
+      const filtrosSobrepostos = await page.locator('#gps-filtros label').evaluateAll(rotulos =>
+        rotulos.some(rotulo => rotulo.firstElementChild.getBoundingClientRect().right > rotulo.getBoundingClientRect().right + 1));
+      assert.equal(filtrosSobrepostos, false);
       await page.getByRole('button', { name: 'Consultas', exact: true }).click();
-      await page.locator('.farol-vermelho').waitFor();
+      await page.locator('.farol-vermelho').getByText('Abaixo do Básico').waitFor();
+      if (papel === 'CEC') {
+        await page.getByRole('button', { name: 'Registros e alertas' }).click();
+        await page.getByText('Nenhum alerta pessoal em aberto.').waitFor();
+        await page.getByRole('button', { name: 'Consultar todos os alertas' }).click();
+        assert.equal(await page.locator('#secao').inputValue(), 'alertas');
+      }
       if (papel === 'PEC') {
         await page.getByRole('button', { name: 'Registros e alertas' }).click();
         await page.getByText('Plano de Trabalho', { exact: true }).click();

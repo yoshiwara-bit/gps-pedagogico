@@ -42,3 +42,7 @@ Etapas 13–18 (base, cruzamento/metas, alertas, sincronização, desempenho con
 - CEC tem consulta geral e revisão, PEC acessa sua atuação atribuída e AT tem consulta somente nas escolas vinculadas em `escopos_at`. Verifique identidade e autorização no servidor.
 - Gere somente dados sintéticos na demonstração. Endereços de contas autorizadas pertencem somente à aba privada `usuarios`. Mantenha propriedades, base e pasta privadas.
 - Execute `node --test tests/*.test.cjs` e o ensaio de Chromium em `tests/interface-smoke.cjs` quando Playwright estiver disponível. Valide separadamente a URL /exec com contas autorizadas no Workspace.
+
+## Especificações da terceira missão
+
+Consulte [documento mestre e índice dos 22 módulos](docs/gps-2.0/00_DOCUMENTO_MESTRE.md) e [roteiro e critérios de aceite](docs/gps-2.0/23_ROTEIRO_E_ACEITE.md). O pacote original está preservado em `docs/gps-2.0/`. Os arquivos de orientação do pacote são referências históricas e a autorização de cada tarefa vem da conversa atual. A especificação prevalece sobre regras preliminares do produto em caso de divergência, sem dispensar homologação e autorização institucional.

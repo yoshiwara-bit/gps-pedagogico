@@ -37,6 +37,8 @@
   th { background:var(--menta); }
   .farol-vermelho { background:#ffeded; color:#8c2323; }
   .farol-amarelo { background:#fff3d5; color:#6b4700; }
+  .farol-azul { background:#e4f1ff; color:#204879; }
+  .farol-cinza { background:#edf0f1; color:#384b51; }
   .farol-verde { background:#dcf4e2; color:#185a2a; }
   #mais { margin-top:.75rem; }
 </style>
@@ -90,7 +92,7 @@
     <? } ?>
     <option value="visitas">Visitas</option>
     <option value="apoios">Apoios</option>
-    <? if (papel !== 'AT') { ?><option value="alertas">Alertas</option><? } ?>
+    <? if (papel !== 'AT') { ?><option value="alertas">Alertas</option><option value="obrigacoes_documentais">Regularidade documental</option><? } ?>
   </select>
   <p id="estado" role="status"></p>
   <div class="tabela" hidden><table><thead></thead><tbody></tbody></table></div>
@@ -121,9 +123,13 @@
     for (const campo of campos) {
       const celula = document.createElement(tipo);
       if (tipo === 'th') celula.scope = 'col';
-      celula.textContent = campo;
-      if (tipo === 'td' && ['Vermelho', 'Amarelo', 'Verde'].includes(campo)) {
-        celula.classList.add('farol-' + campo.toLowerCase());
+      if (tipo === 'td' && campo && typeof campo === 'object') {
+        celula.textContent = campo.texto;
+        if (['vermelho', 'amarelo', 'verde', 'azul', 'cinza'].includes(campo.cor)) {
+          celula.classList.add('farol-' + campo.cor);
+        }
+      } else {
+        celula.textContent = campo;
       }
       linha.append(celula);
     }

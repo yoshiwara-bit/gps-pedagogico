@@ -1,7 +1,8 @@
 <style>
   .gps-bloco { background: white; border: 1px solid #c8d5d9; border-radius: .5rem; padding: 1rem; margin: 1rem 0; }
-  .gps-grade { display: grid; gap: .75rem; grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr)); }
-  .gps-grade label { display: grid; gap: .3rem; }
+  .gps-grade { display: grid; gap: .75rem; grid-template-columns: repeat(auto-fit, minmax(min(100%, 13rem), 1fr)); }
+  .gps-grade label { display: grid; gap: .3rem; min-width: 0; }
+  .gps-grade select, .gps-grade input { min-width: 0; width: 100%; }
   textarea, input { color: inherit; font: inherit; padding: .5rem; width: 100%; box-sizing: border-box; }
   #gps-mapa { width: 100%; max-width: 46rem; background: #edf4f2; }
   #gps-mapa circle { cursor: pointer; }
@@ -23,8 +24,13 @@
     <button>Aplicar filtros</button>
   </form>
   <p id="gps-territorio-estado" role="status"></p>
-  <svg id="gps-mapa" viewBox="0 0 600 320" aria-label="Posição relativa das escolas por latitude e longitude"></svg>
+  <p>Mapa esquemático. As posições ilustram a distribuição e não representam limites geográficos.</p>
+  <svg id="gps-mapa" viewBox="0 0 600 320" aria-label="Mapa esquemático sem limites geográficos"></svg>
   <p id="gps-mapa-estado" role="status"></p>
+  <aside id="gps-ficha" class="gps-bloco" hidden>
+    <h3 id="gps-ficha-nome"></h3>
+    <p id="gps-ficha-atividade"></p>
+  </aside>
   <div class="tabela"><table aria-label="Gráfico por período"><tbody id="gps-grafico"></tbody></table></div>
   <details><summary>Mapa de calor temporal por escola</summary>
     <div id="gps-calor" class="tabela"><table aria-label="Calor temporal"><tbody id="gps-heat"></tbody></table></div>
@@ -48,6 +54,15 @@
     </form>
     <p id="gps-plano-estado" role="status"></p>
   </details>
+  <details><summary>Justificar visita com termo pendente</summary>
+    <form id="gps-decisao" class="gps-grade">
+      <label>Visita<select name="visita_id" required></select></label>
+      <label>Motivo se a visita não ocorreu<textarea name="motivo" maxlength="1000"></textarea></label>
+      <button name="decisao" value="termo_atrasado">Termo em atraso</button>
+      <button name="decisao" value="nao_ocorreu">A visita não ocorreu</button>
+    </form>
+    <p id="gps-decisao-estado" role="status"></p>
+  </details>
   <details><summary>Termo ou ficha de visita</summary>
     <form id="gps-termo" class="gps-grade">
       <label>Visita<select name="visita_id" required></select></label>
@@ -58,7 +73,13 @@
     <p id="gps-termo-estado" role="status"></p>
   </details>
 </div>
-<div class="gps-bloco"><button id="gps-abrir-alertas" type="button" hidden>Ver alertas</button></div>
+<div class="gps-bloco">
+  <h2>Registros e alertas</h2>
+  <p id="gps-registros-estado" role="status">Verificando permissões de registro…</p>
+  <p id="gps-central-estado" role="status">Carregando seus alertas…</p>
+  <button id="gps-abrir-alertas" type="button" hidden>Ver meus alertas</button>
+  <button id="gps-alertas-gerais" type="button" hidden>Consultar todos os alertas</button>
+</div>
 </section>
   <dialog id="gps-alertas">
     <h2>Avisos de acompanhamento</h2>
@@ -77,6 +98,7 @@
   const filtros = el('gps-filtros');
   const plano = el('gps-plano');
   const termo = el('gps-termo');
+  const decisao = el('gps-decisao');
   const justificativa = el('gps-justificar');
   const dialogo = el('gps-alertas');
   let numeroConsulta = 0;
@@ -103,6 +125,13 @@
     }
     el('gps-territorio-estado').textContent =
       `${resumo.previstas} previstas · ${resumo.contabilizadas} contabilizadas · ${resumo.comprovadas} comprovadas`;
+    const ficha = pontos.find(p => p.id === filtros.elements.escola_id.value);
+    el('gps-ficha').hidden = !ficha;
+    if (ficha) {
+      el('gps-ficha-nome').textContent = ficha.nome;
+      el('gps-ficha-atividade').textContent =
+        `${ficha.previstas || 0} previstas · ${ficha.contabilizadas || 0} contabilizadas · ${ficha.comprovadas || 0} comprovadas`;
+    }
     const mapa = el('gps-mapa');
     mapa.replaceChildren();
     const locais = pontos.filter(p => Number.isFinite(p.latitude) && Number.isFinite(p.longitude));
@@ -172,15 +201,20 @@
   rpc('gpsMinhasOpcoes', [], dados => {
     el('gps-revisar').hidden = dados.papel !== 'CEC';
     el('gps-atuacao').hidden = !dados.escolas.length;
+    el('gps-alertas-gerais').hidden = dados.papel !== 'CEC';
+    el('gps-registros-estado').textContent = dados.escolas.length ? 'Selecione um formulário para registrar uma atividade.' :
+      dados.papel === 'CEC' ? 'Acompanhe os alertas gerais. Formulários de atividade exigem atribuição PEC.' :
+      'Nenhuma escola atribuída para registrar atividades.';
     preencher(plano.elements.escola_id, dados.escolas, 'Selecione');
     preencher(plano.elements.pasta_id, dados.pastas, 'Selecione');
     preencher(plano.elements.componente_id, dados.componentes, 'Selecione');
     preencher(termo.elements.visita_id, dados.visitas, 'Selecione');
+    preencher(decisao.elements.visita_id, dados.visitas, 'Selecione');
     const atualizarTurmas = () => preencher(plano.elements.turma_id,
       dados.turmas.filter(r => r.escola_id === plano.elements.escola_id.value), 'Sem turma');
     atualizarTurmas();
     plano.elements.escola_id.addEventListener('change', atualizarTurmas);
-  });
+  }, 'gps-registros-estado');
   el('gps-verificar').addEventListener('click', () => rpc('gpsAvisosFormulario', [formData(plano)], avisos => {
     el('gps-plano-estado').textContent = `${avisos.alinhadas} de ${avisos.prioridades} prioridades da escola contempladas.`;
   }, 'gps-plano-estado'));
@@ -196,14 +230,29 @@
       rpc(metodo, [formData(form)], () => { el(estado).textContent = 'Registro salvo.'; }, estado);
     });
   }
+  decisao.addEventListener('submit', evt => {
+    evt.preventDefault();
+    const dados = { ...formData(decisao), decisao: evt.submitter?.value };
+    if (!window.confirm('Confirma o registro desta decisão para a visita?')) return;
+    rpc('gpsRegistrarDecisaoVisita', [dados], () => {
+      el('gps-decisao-estado').textContent = 'Decisão registrada. A atualização do painel pode levar até 30 segundos.';
+    }, 'gps-decisao-estado');
+  });
   function alertas(abrir) {
     rpc('gpsMeusAlertas', [], itens => {
       preencher(justificativa.elements.id, itens.map(r => ({ id: r.id, nome: r.tipo.replaceAll('_', ' ') + ' · ' + r.periodo })), 'Selecione');
       el('gps-abrir-alertas').hidden = !itens.length;
+      el('gps-central-estado').textContent = itens.length ? 'Há alertas pessoais em aberto.' : 'Nenhum alerta pessoal em aberto.';
       if (itens.length && abrir && !dialogo.open) dialogo.showModal();
       if (!itens.length && dialogo.open) dialogo.close();
-    });
+    }, 'gps-central-estado');
   }
+  el('gps-alertas-gerais').addEventListener('click', () => {
+    const consulta = document.querySelector('#secao');
+    consulta.value = 'alertas';
+    document.querySelector('[data-abrir=consultas]').click();
+    consulta.dispatchEvent(new Event('change'));
+  });
   el('gps-abrir-alertas').addEventListener('click', () => alertas(true));
   el('gps-fechar-alertas').addEventListener('click', () => dialogo.close());
   justificativa.addEventListener('submit', evt => {

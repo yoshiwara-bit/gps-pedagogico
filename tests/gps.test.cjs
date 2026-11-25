@@ -409,13 +409,17 @@ test('AT acessa somente escolas e atividades no escopo explícito e não pode gr
   }
 });
 
-test('farol só classifica nota SARESP validada na escala da edição', () => {
-  const nota = { fonte: 'saresp', metrica: 'nota', escala: 'saresp:nota:2025', ano: '2025', farolValidado: true };
-  for (const [valor, esperado] of [['4', 'Vermelho'], ['4,1', 'Amarelo'], ['6', 'Amarelo'], ['6,1', 'Verde'], ['', '—']]) {
-    assert.equal(gps.gpsFarolSaresp_({ ...nota, valor }), esperado);
+test('farol exige escala, edição, nível e regra homologada sem inferir corte numérico', () => {
+  const nota = { fonte: 'prova_paulista', metrica: 'acerto', escala: 'pp', ano: '2025',
+    farolValidado: true, nivel: 'Adequado', valor: '5' };
+  const regra = { ...nota, cor: 'verde', homologado: true, referencia: 'Gabarito sintético' };
+  assert.deepEqual(plain(gps.gpsFarolIndicador_(nota, [regra])), { texto: 'Adequado', cor: 'verde' });
+  for (const mudanca of [{ ano: 2026 }, { escala: 'outra' }, { nivel: '' }]) {
+    assert.deepEqual(plain(gps.gpsFarolIndicador_({ ...nota, ...mudanca }, [regra])), { texto: '5', cor: 'cinza' });
   }
-  assert.equal(gps.gpsFarolSaresp_({ ...nota, valor: '5', farolValidado: false }), '—');
-  assert.equal(gps.gpsFarolSaresp_({ ...nota, valor: '5', fonte: 'saeb' }), '—');
+  assert.equal(gps.gpsFarolIndicador_(nota, [regra, regra]).cor, 'cinza');
+  assert.equal(gps.gpsFarolIndicador_({ ...nota, valor: '' }, [regra]).texto, 'Sem dado');
+  assert.equal(gps.gpsFarolIndicador_({ ...nota, farolValidado: false }, [regra]).texto, 'Em revisão');
 });
 
 test('modo demonstração bloqueia sincronizador e gatilho mesmo com automação habilitada', () => {
@@ -454,4 +458,46 @@ test('sessão rejeita identidade ausente, duplicada ou inativa e neutraliza pec_
   } finally {
     Object.assign(gps, anteriores);
   }
+});
+
+test('regularidade exige base homologada e entrega encerra lembretes', () => {
+  const base = { prazo: '2026-11-25', homologado: true, referencia: 'Regra sintética' };
+  assert.equal(gps.gpsSituacaoDocumento_(base, '2026-11-18').lembrete, 'D-7');
+  assert.equal(gps.gpsSituacaoDocumento_(base, '2026-11-23').lembrete, 'D-2');
+  assert.equal(gps.gpsSituacaoDocumento_(base, '2026-11-27').cor, 'vermelho');
+  assert.equal(gps.gpsSituacaoDocumento_({ ...base, homologado: false }, '2026-11-27').cor, 'cinza');
+  const entregue = gps.gpsSituacaoDocumento_({ ...base, entrega: '2026-11-26' }, '2026-11-27');
+  assert.equal(entregue.cor, 'amarelo');
+  assert.equal(entregue.lembrete, null);
+});
+
+test('segundo dia útil exige calendário diário completo e aprovado', () => {
+  const dias = [false, true, false, true].map((util, i) =>
+    ({ data: '2026-11-0' + (i + 1), util, homologado: true, referencia: 'Calendário sintético' }));
+  assert.equal(gps.gpsSegundoDiaUtil_('2026-11', dias), '2026-11-04');
+  assert.equal(gps.gpsSegundoDiaUtil_('2026-11', dias.slice(1)), null);
+  assert.equal(gps.gpsSegundoDiaUtil_('2026-11', [...dias, dias[0]]), null);
+});
+
+test('frequência é ponderada e sinaliza cobertura parcial', () => {
+  const freq = gps.gpsAgregarFrequencia_([{ presencas: 10, denominador: 10 },
+    { presencas: 45, denominador: 90 }, { percentual: 60 }]);
+  assert.deepEqual(plain(freq), { percentual: 55, denominador: 100, presencas: 55, semCobertura: 1 });
+  assert.equal(gps.gpsAgregarFrequencia_([]).percentual, null);
+});
+
+test('decisão preserva agenda original, mantém atraso na cobrança e exclui visita não ocorrida', () => {
+  const visitas = ['A', 'B'].map(id => ({ id, tipo: 'visita', data: '2026-11-01', status: 'agendada' }));
+  const decisoes = [{ visita_id: 'A', decisao: 'termo_atrasado' }, { visita_id: 'B', decisao: 'nao_ocorreu' }];
+  const [atrasada, cancelada] = gps.gpsCruzarVisitas_(gps.gpsAplicarDecisoesVisita_(visitas, decisoes), [], '2026-11-25');
+  assert.equal(atrasada.aguardandoTermo, true);
+  assert.equal(cancelada.contabilizada, false);
+  assert.equal(visitas[1].status, 'agendada');
+});
+
+test('cabeçalhos e referências exibem rótulos e nomes em vez das chaves internas', () => {
+  assert.equal(gps.gpsRotuloCampo_('componente_id'), 'Componente curricular');
+  const nomes = { escola_id: new Map([['E', 'Escola fictícia']]) };
+  assert.equal(gps.gpsValorPainel_({ escola_id: 'E' }, 'escola_id', nomes), 'Escola fictícia');
+  assert.equal(gps.gpsValorPainel_({ escola_id: 'X' }, 'escola_id', nomes), 'Cadastro indisponível');
 });

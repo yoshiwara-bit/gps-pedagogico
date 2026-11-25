@@ -57,3 +57,7 @@ Use a opção restrita durante todo o piloto. Se uma conta cadastrada receber **
 2. Com PEC, teste **Registros e alertas** e registre uma atividade com uma escola fictícia atribuída. Use somente texto sintético. Confira o recorte próprio e a evidência de uma visita disponível no formulário.
 3. Com AT, verifique o recorte das oito escolas de exemplo e o menu de consulta. Com uma conta do domínio ausente de **usuarios**, verifique que a aplicação retorna **Acesso restrito**.
 4. Compartilhe somente o endereço `/exec` da demonstração com as contas do piloto após essas verificações.
+
+## Validação adicional da terceira missão
+
+Use um projeto isolado para validar esta versão. Com uma cópia de base sintética anterior, execute `gpsPrepararBaseLaboratorio_` antes de abrir a interface. O instalador da demonstração já prepara o esquema para bases novas. Em CEC, abra **Registros e alertas** e confira o estado explícito e o acesso aos alertas gerais. Em PEC, confira **Justificar visita com termo pendente**. Em **Território**, verifique a ficha resumida ao selecionar uma escola no mapa esquemático. A coluna de farol fica cinza para notas sem classificação homologada. O relatório da etapa 3 descreve as fontes ainda necessárias.

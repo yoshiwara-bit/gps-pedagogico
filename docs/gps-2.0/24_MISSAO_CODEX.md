@@ -1,0 +1,5 @@
+# Terceira missão — comando ao Codex
+
+Leia integralmente 00_DOCUMENTO_MESTRE.md, os 22 módulos e 23_ROTEIRO_E_ACEITE.md. Incorpore estes arquivos à pasta docs/gps-2.0/ da branch gps-2-apps-script e referencie-os em AGENTS.md. Confirme leitura de todos os 25 arquivos antes de implementar. Audite o commit 1094dfb e o estado atual. Preserve main, GPS_LAB.gs, implantação existente e dados originais. Não faça merge nem deploy. Não use dados reais, segredos ou emails reais.
+
+Implemente incrementalmente conforme roteiro, começando pelas correções observadas. Reutilize código válido. Se uma dependência externa ou documento oficial estiver ausente, crie configuração/revisão segura e registre bloqueio; prossiga com tarefas independentes. Não invente regras oficiais. Execute testes a cada etapa. Registre commits na branch experimental e produza RELATORIO_DESENVOLVIMENTO_ETAPA_3.md com matriz de rastreabilidade, testes, resultados, pendências, decisões, riscos e guia de instalação/validação. Entregue pacote experimental atualizado, sem implantar. Não declare módulos concluídos apenas por telas ou testes simulados.

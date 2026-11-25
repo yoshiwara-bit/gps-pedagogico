@@ -18,7 +18,11 @@ function gpsSinaisAtuacao_(base, hoje) {
         prioridade.id, String(ano), pec, 'alta');
     }
   }
-  for (const r of atividades.filter(item => item.pendenciaDocumental)) sinal('termo_pendente', r.id, r.data, r.pec_id);
+  for (const r of atividades) {
+    if (r.aguardandoTermo && Date.parse(hoje) - Date.parse(r.data) >= 7 * 86400000) {
+      sinal('termo_pendente', r.id, r.data, r.pec_id);
+    }
+  }
   const alertas = new Map(gpsTabela_(base, 'alertas').registros.map(r => [r.id, r]));
   for (const r of gpsTabela_(base, 'encaminhamentos').registros) {
     const alerta = alertas.get(r.alerta_id);
@@ -119,4 +123,15 @@ function gpsJustificarAlerta(dados) {
     gpsAuditar_(base, 'justificativas', id, 'registro_web', perfil.id);
     return { id };
   });
+}
+
+
+function gpsResolverAlertaTermo_(base, visita) {
+  const espelhoCEC = gpsChave_(visita.id, visita.pec_id);
+  const alertas = gpsTabela_(base, 'alertas').registros.filter(r => r.tipo === 'termo_pendente' &&
+    (r.alvo_id === visita.id || r.alvo_id === espelhoCEC) && r.status !== 'resolvido');
+  for (const alerta of alertas) {
+    gpsAuditar_(base, 'alertas', alerta.id, 'termo_encerrado', visita.pec_id);
+    gpsAtualizarEstado_(base, 'alertas', alerta, { ...alerta, status: 'resolvido' });
+  }
 }
