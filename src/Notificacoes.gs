@@ -98,6 +98,7 @@ function gpsExecutarAlertas_(base, hoje, enviar) {
 
 function gpsMeusAlertas() {
   const { base, perfil } = gpsSessao_();
+  if (perfil.papel === 'AT') return [];
   return gpsTabela_(base, 'alertas').registros.filter(r => r.status === 'aberto' &&
     r.destinatario_id === (perfil.papel === 'CEC' ? 'cec:' + perfil.id : perfil.pec_id))
     .slice(-30).map(({ id, tipo, criticidade, periodo }) => ({ id, tipo, criticidade, periodo }));
@@ -106,6 +107,7 @@ function gpsMeusAlertas() {
 function gpsJustificarAlerta(dados) {
   return gpsComTrava_(() => {
     const { base, perfil } = gpsSessao_();
+    if (perfil.papel === 'AT') throw new Error('Perfil de consulta');
     const alerta = gpsTabela_(base, 'alertas').registros.find(r => r.id === dados.id && r.destinatario_id ===
       (perfil.papel === 'CEC' ? 'cec:' + perfil.id : perfil.pec_id));
     if (!alerta || !['aberto', 'justificado'].includes(alerta.status)) throw new Error('Alerta indisponível');

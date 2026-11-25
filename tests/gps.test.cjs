@@ -368,3 +368,90 @@ test('alertas persistidos não repetem e-mail reservado após falha ambígua', (
     Object.assign(gps, preservar, { SpreadsheetApp: planilhaAnterior });
   }
 });
+
+test('demonstração gera 40 escolas e referências válidas sem contas cadastradas', () => {
+  const dados = gps.gpsDadosDemonstracao_('2026-11-25');
+  assert.equal(dados.escolas.length, 40);
+  assert.ok(dados.escolas.every(r => r.nome.startsWith('Escola fictícia') && Number.isFinite(r.latitude)));
+  assert.equal(dados.usuarios, undefined);
+  assert.equal(dados.escopos_at.length, 8);
+  const indice = {};
+  for (const [tabela, registros] of Object.entries(dados)) {
+    indice[tabela] = new Map();
+    for (const registro of registros) {
+      assert.equal(gps.gpsValidarRegistro_(tabela, registro, indice), true);
+      indice[tabela].set(registro.id, registro);
+    }
+  }
+  const atividades = gps.gpsCruzarVisitas_(dados.visitas.map(r => ({ ...r, tipo: 'visita' })),
+    dados.termos_web.map(r => ({ ...r, validado: true })), '2026-11-25');
+  assert.equal(atividades.filter(r => r.contabilizada).length, 7);
+  assert.equal(atividades.filter(r => r.comprovada).length, 3);
+});
+
+test('AT acessa somente escolas e atividades no escopo explícito e não pode gravar plano', () => {
+  const antigo = gps.gpsTabela_;
+  gps.gpsTabela_ = (_, nome) => {
+    assert.equal(nome, 'escopos_at');
+    return { registros: [{ usuario_id: 'AT1', escola_id: 'E1' }, { usuario_id: 'AT2', escola_id: 'E2' }] };
+  };
+  try {
+    const perfil = { papel: 'AT', id: 'AT1', pec_id: 'valor-indevido' };
+    perfil.escolas = gps.gpsEscopoEscolas_({}, perfil);
+    assert.equal(gps.gpsPodeVer_(perfil, 'escolas', { id: 'E1' }), true);
+    assert.equal(gps.gpsPodeVer_(perfil, 'visitas', { escola_id: 'E2' }), false);
+    assert.equal(gps.gpsPodeVer_(perfil, 'indicadores', { escola_id: 'E1' }), false);
+    assert.throws(() => gps.gpsValidarAtividadeWeb_({}, perfil, {
+      escola_id: 'E1', componente_id: 'LP', pasta_id: 'P', data: '2026-11-25', tipo: 'visita'
+    }), /campos obrigatórios/);
+  } finally {
+    gps.gpsTabela_ = antigo;
+  }
+});
+
+test('farol só classifica nota SARESP validada na escala da edição', () => {
+  const nota = { fonte: 'saresp', metrica: 'nota', escala: 'saresp:nota:2025', ano: '2025', farolValidado: true };
+  for (const [valor, esperado] of [['4', 'Vermelho'], ['4,1', 'Amarelo'], ['6', 'Amarelo'], ['6,1', 'Verde'], ['', '—']]) {
+    assert.equal(gps.gpsFarolSaresp_({ ...nota, valor }), esperado);
+  }
+  assert.equal(gps.gpsFarolSaresp_({ ...nota, valor: '5', farolValidado: false }), '—');
+  assert.equal(gps.gpsFarolSaresp_({ ...nota, valor: '5', fonte: 'saeb' }), '—');
+});
+
+test('modo demonstração bloqueia sincronizador e gatilho mesmo com automação habilitada', () => {
+  const anterior = gps.PropertiesService;
+  gps.PropertiesService = { getScriptProperties: () => ({ getProperty: chave => ({
+    GPS_LAB_MODO: 'demonstracao', GPS_LAB_AUTOMACAO: 'true', GPS_LAB_EMAIL: 'true', GPS_LAB_FOLDER_ID: 'fake'
+  })[chave] }) };
+  try {
+    assert.doesNotThrow(() => gps.gpsSincronizarLaboratorio_());
+    assert.throws(() => gps.gpsConfigurarGatilhoLaboratorio_(), /desabilitada/);
+    assert.throws(() => gps.gpsReabrirErroFilaLaboratorio_(), /indisponível/);
+  } finally {
+    gps.PropertiesService = anterior;
+  }
+});
+
+test('sessão rejeita identidade ausente, duplicada ou inativa e neutraliza pec_id no AT', () => {
+  const nomes = ['Session', 'gpsAbrirBase_', 'gpsTabela_'];
+  const anteriores = Object.fromEntries(nomes.map(nome => [nome, gps[nome]]));
+  let email = '';
+  let registros = [];
+  gps.Session = { getActiveUser: () => ({ getEmail: () => email }) };
+  gps.gpsAbrirBase_ = () => ({});
+  gps.gpsTabela_ = () => ({ registros });
+  try {
+    assert.throws(() => gps.gpsSessao_(), /indisponível/);
+    email = ' TESTE@EXAMPLE.INVALID ';
+    assert.throws(() => gps.gpsSessao_(), /indisponível/);
+    const conta = { id: 'AT1', email: 'teste@example.invalid', perfil: 'AT', pec_id: 'P1', ativo: true };
+    registros = [{ ...conta, ativo: 'true' }];
+    assert.throws(() => gps.gpsSessao_(), /indisponível/);
+    registros = [conta, conta];
+    assert.throws(() => gps.gpsSessao_(), /indisponível/);
+    registros = [conta];
+    assert.deepEqual(plain(gps.gpsSessao_().perfil), { papel: 'AT', pec_id: '', id: 'AT1' });
+  } finally {
+    Object.assign(gps, anteriores);
+  }
+});

@@ -4,37 +4,93 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
-  :root { color: #173344; background: #f4f7f8; font: 16px system-ui, sans-serif; }
-  body { max-width: 75rem; margin: auto; padding: clamp(1rem, 4vw, 3rem); }
-  h1 { margin: .25rem 0 1.5rem; }
-  label { font-weight: 600; }
-  select, button { font: inherit; color: inherit; padding: .55rem; }
-  button { cursor: pointer; }
-  .tabela { overflow-x: auto; border: 1px solid #c8d5d9; background: white; }
-  table { border-collapse: collapse; width: 100%; text-align: left; }
-  th, td { padding: .7rem; white-space: nowrap; border-bottom: 1px solid #e0e8eb; }
-  th { background: #e8eff1; }
-  #mais { margin-top: .75rem; }
+  :root { --petroleo:#083d43; --turquesa:#06796e; --menta:#e1f5f0; --borda:#c8dcda;
+    color:#153438; background:#f2f7f6; font:16px system-ui,sans-serif; }
+  * { box-sizing:border-box; }
+  [hidden] { display:none !important; }
+  body { margin:0; }
+  .largura { max-width:76rem; margin:auto; padding-inline:clamp(1rem,4vw,3rem); }
+  header { background:var(--petroleo); color:white; padding-block:1.2rem; }
+  .marca { display:flex; justify-content:space-between; align-items:center; gap:.75rem; flex-wrap:wrap; }
+  .marca small { color:#b4f0e5; display:block; font-weight:600; }
+  h1 { margin:.25rem 0 0; font-size:clamp(1.55rem,4vw,2.25rem); }
+  h2 { margin-top:0; }
+  main { padding-block:1.25rem 3rem; }
+  nav { border-bottom:1px solid var(--borda); background:white; }
+  nav .largura { display:flex; gap:.25rem; flex-wrap:wrap; }
+  nav button { border:0; background:white; border-bottom:3px solid transparent; border-radius:0; color:var(--petroleo); }
+  nav button[aria-current="page"] { border-color:var(--turquesa); color:var(--turquesa); background:var(--menta); }
+  label { font-weight:600; }
+  select, button, input, textarea { font:inherit; color:inherit; padding:.6rem; border:1px solid var(--borda); border-radius:.4rem; }
+  button { cursor:pointer; background:var(--turquesa); color:white; font-weight:600; }
+  button:disabled { opacity:.55; }
+  :focus-visible { outline:3px solid #129e8e; outline-offset:2px; }
+  .etiqueta { display:inline-block; border-radius:1rem; padding:.25rem .7rem; background:var(--menta); color:var(--petroleo); font-size:.85rem; font-weight:700; }
+  .etiqueta.experimental { background:#fff3d5; color:#6b4700; }
+  .etiqueta.pendente { background:#eef1f2; color:#354c50; }
+  .metricas { display:grid; grid-template-columns:repeat(auto-fit,minmax(9rem,1fr)); gap:.75rem; }
+  .metricas div { background:white; border:1px solid var(--borda); border-radius:.5rem; padding:1rem; }
+  .metricas strong { display:block; font-size:1.65rem; color:var(--turquesa); }
+  .tabela { overflow-x:auto; border:1px solid var(--borda); background:white; }
+  table { border-collapse:collapse; width:100%; text-align:left; }
+  th, td { padding:.7rem; white-space:nowrap; border-bottom:1px solid #e0ece9; }
+  th { background:var(--menta); }
+  .farol-vermelho { background:#ffeded; color:#8c2323; }
+  .farol-amarelo { background:#fff3d5; color:#6b4700; }
+  .farol-verde { background:#dcf4e2; color:#185a2a; }
+  #mais { margin-top:.75rem; }
 </style>
 </head>
 <body>
 <header>
-  <p>URE Miracatu</p>
-  <h1>GPS Pedagógico 2.0</h1>
+  <div class="largura marca">
+    <div><small>URE Miracatu</small><h1>GPS Pedagógico 2.0</h1></div>
+    <span class="etiqueta experimental"><?= demonstracao ? 'Demonstração · dados sintéticos' : 'Ambiente experimental' ?> · <?= papel ?></span>
+  </div>
 </header>
-<main>
+<nav aria-label="Navegação principal"><div class="largura">
+  <button type="button" data-abrir="inicio" aria-current="page">Visão geral</button>
+  <button type="button" data-abrir="territorio">Território</button>
+  <button type="button" data-abrir="consultas">Consultas</button>
+  <? if (papel !== 'AT') { ?><button type="button" data-abrir="registros">Registros e alertas</button><? } ?>
+</div></nav>
+<main class="largura">
+  <section data-pagina="inicio">
+    <h2>Visão geral</h2>
+    <p>Atividades do ano no seu perfil, antes da aplicação de filtros.</p>
+    <div class="metricas" id="gps-resumo" aria-live="polite">
+      <div><strong id="gps-total-escolas">—</strong>Escolas no escopo</div>
+      <div><strong id="gps-total-previstas">—</strong>Previstas</div>
+      <div><strong id="gps-total-contabilizadas">—</strong>Contabilizadas</div>
+      <div><strong id="gps-total-comprovadas">—</strong>Comprovadas</div>
+    </div>
+    <dl>
+      <dt><span class="etiqueta">Operacional no piloto</span></dt>
+      <dd>Consulta por perfil, recortes do território e, para PECs com atribuição, registro de atividade e evidência.</dd>
+      <dt><span class="etiqueta experimental">Experimental</span></dt>
+      <dd>Projeções pedagógicas, faróis e revisão de boletins. Os resultados de demonstração são fictícios.</dd>
+      <dt><span class="etiqueta pendente">Em desenvolvimento</span></dt>
+      <dd>Envios de e-mail, sincronização automática e homologação dos boletins reais.</dd>
+    </dl>
+  </section>
+  <section data-pagina="consultas" hidden>
+  <h2>Consultas</h2>
   <label for="secao">Painel</label>
   <select id="secao">
+    <? if (papel !== 'PEC') { ?>
     <option value="escolas">Escolas</option>
+    <? } ?>
+    <? if (papel === 'CEC') { ?>
     <option value="municipios">Municípios</option>
     <option value="pecs">PECs</option>
     <option value="prioridades">Prioridades</option>
     <option value="indicadores">Indicadores</option>
     <option value="revisoes">Revisões documentais</option>
     <option value="metas">Metas</option>
+    <? } ?>
     <option value="visitas">Visitas</option>
     <option value="apoios">Apoios</option>
-    <option value="alertas">Alertas</option>
+    <? if (papel !== 'AT') { ?><option value="alertas">Alertas</option><? } ?>
   </select>
   <p id="estado" role="status"></p>
   <div class="tabela" hidden><table><thead></thead><tbody></tbody></table></div>
@@ -47,15 +103,16 @@
     </form>
     <p id="gps-revisao-estado" role="status"></p>
   </details>
-  <?!= gpsIncluir_('Atuacao'); ?>
+  </section>
+  <?!= gpsIncluir_('Atuacao') ?>
 </main>
 <script>
   const secao = document.querySelector('#secao');
   const mais = document.querySelector('#mais');
   const estado = document.querySelector('#estado');
-  const cabecalho = document.querySelector('thead');
-  const corpo = document.querySelector('tbody');
-  const tabela = document.querySelector('.tabela');
+  const cabecalho = document.querySelector('[data-pagina=consultas] thead');
+  const corpo = document.querySelector('[data-pagina=consultas] tbody');
+  const tabela = document.querySelector('[data-pagina=consultas] .tabela');
   let proximo = 0;
   let requisicao = 0;
 
@@ -65,6 +122,9 @@
       const celula = document.createElement(tipo);
       if (tipo === 'th') celula.scope = 'col';
       celula.textContent = campo;
+      if (tipo === 'td' && ['Vermelho', 'Amarelo', 'Verde'].includes(campo)) {
+        celula.classList.add('farol-' + campo.toLowerCase());
+      }
       linha.append(celula);
     }
   }
@@ -98,7 +158,20 @@
 
   secao.addEventListener('change', () => carregar(true));
   mais.addEventListener('click', () => carregar());
-  carregar(true);
+  const navegacao = document.querySelectorAll('[data-abrir]');
+  let carregouConsulta = false;
+  for (const botao of navegacao) botao.addEventListener('click', () => {
+    const alvo = botao.dataset.abrir;
+    for (const pagina of document.querySelectorAll('[data-pagina]')) pagina.hidden = pagina.dataset.pagina !== alvo;
+    for (const item of navegacao) {
+      if (item === botao) item.setAttribute('aria-current', 'page');
+      else item.removeAttribute('aria-current');
+    }
+    if (alvo === 'consultas' && !carregouConsulta) {
+      carregouConsulta = true;
+      carregar(true);
+    }
+  });
 </script>
 </body>
 </html>

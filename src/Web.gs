@@ -1,9 +1,19 @@
 function doGet() {
-  return HtmlService.createTemplateFromFile('Painel').evaluate().setTitle('GPS Pedagógico 2.0');
+  let acesso;
+  try {
+    acesso = gpsSessao_();
+  } catch {
+    return HtmlService.createHtmlOutput('<main><h1>Acesso restrito</h1><p>Entre com uma conta autorizada para a demonstração. Se o problema persistir, peça ao responsável que revise a instalação e seu acesso.</p></main>')
+      .setTitle('GPS Pedagógico 2.0').addMetaTag('viewport', 'width=device-width, initial-scale=1');
+  }
+  const pagina = HtmlService.createTemplateFromFile('Painel');
+  pagina.papel = acesso.perfil.papel;
+  pagina.demonstracao = gpsModoDemonstracao_();
+  return pagina.evaluate().setTitle('GPS Pedagógico 2.0').addMetaTag('viewport', 'width=device-width, initial-scale=1');
 }
 
 const GPS_PAINEL = {
-  indicadores: { titulo: 'Indicadores', campos: ['id', 'fonte', 'ano', 'escola_id', 'serie', 'metrica', 'escala', 'valor_original', 'valor', 'revisar'] },
+  indicadores: { titulo: 'Indicadores', campos: ['id', 'fonte', 'ano', 'escola_id', 'serie', 'metrica', 'escala', 'valor_original', 'valor', 'farol', 'revisar'] },
   revisoes: { titulo: 'Revisões documentais', campos: ['documento_id', 'motivo', 'status'] },
   escolas: { titulo: 'Escolas', campos: ['nome', 'codigo', 'municipio_id'] },
   municipios: { titulo: 'Municípios', campos: ['nome'] },
@@ -17,6 +27,10 @@ const GPS_PAINEL = {
 
 function gpsPodeVer_(perfil, tabela, registro) {
   if (perfil.papel === 'CEC') return true;
+  if (perfil.papel === 'AT') {
+    if (tabela === 'escolas') return perfil.escolas?.has(registro.id) === true;
+    return ['visitas', 'apoios'].includes(tabela) && perfil.escolas?.has(registro.escola_id) === true;
+  }
   if (perfil.papel !== 'PEC' || !perfil.pec_id) return false;
   if (['visitas', 'apoios'].includes(tabela)) return registro.pec_id === perfil.pec_id;
   if (tabela === 'alertas') return registro.destinatario_id === perfil.pec_id;
@@ -40,16 +54,22 @@ function gpsCarregarPainel(tabela, cursor) {
     });
     return { titulo, campos, linhas, proximo: cursor + 100 < prioridades.length ? cursor + 100 : null };
   }
+  if (perfil.papel === 'AT') perfil.escolas = gpsEscopoEscolas_(planilha, perfil);
   const aba = planilha.getSheetByName(tabela);
   const ultimaLinha = aba.getLastRow();
   const inicio = cursor + 2;
   const quantidade = Math.max(0, Math.min(100, ultimaLinha - inicio + 1));
   const colunas = ['id', ...GPS_SCHEMA[tabela]];
   const campos = GPS_PAINEL[tabela].campos;
-  const valores = quantidade ? aba.getRange(inicio, 1, quantidade, colunas.length).getDisplayValues() : [];
-  const linhas = valores.map(linha => Object.fromEntries(colunas.map((campo, i) => [campo, linha[i]])))
+  const intervalo = quantidade ? aba.getRange(inicio, 1, quantidade, colunas.length) : null;
+  const brutos = tabela === 'indicadores' && intervalo ? intervalo.getValues() : [];
+  const valores = intervalo ? intervalo.getDisplayValues() : [];
+  const linhas = valores.map((linha, j) => ({
+    ...Object.fromEntries(colunas.map((campo, i) => [campo, linha[i]])),
+    farolValidado: brutos[j]?.[colunas.indexOf('revisar')] === false
+  }))
     .filter(registro => registro.id && gpsPodeVer_(perfil, tabela, registro))
-    .map(registro => campos.map(campo => registro[campo]));
+    .map(registro => campos.map(campo => campo === 'farol' ? gpsFarolSaresp_(registro) : registro[campo]));
   return {
     titulo: GPS_PAINEL[tabela].titulo, campos, linhas,
     proximo: inicio + quantidade <= ultimaLinha ? cursor + quantidade : null
@@ -63,10 +83,10 @@ function gpsSessao_() {
   const candidatos = gpsTabela_(base, 'usuarios').registros.filter(item => String(item.email).trim().toLowerCase() === email);
   const usuario = candidatos[0];
   if (candidatos.length !== 1 || usuario.ativo !== true ||
-      !['CEC', 'PEC'].includes(usuario.perfil) || (usuario.perfil === 'PEC' && !usuario.pec_id)) {
+      !['CEC', 'PEC', 'AT'].includes(usuario.perfil) || (usuario.perfil === 'PEC' && !usuario.pec_id)) {
     throw new Error('Acesso ao laboratório indisponível');
   }
-  return { base, perfil: { papel: usuario.perfil, pec_id: usuario.pec_id, id: usuario.id } };
+  return { base, perfil: { papel: usuario.perfil, pec_id: usuario.perfil === 'AT' ? '' : usuario.pec_id, id: usuario.id } };
 }
 
 function gpsHoje_() {
@@ -75,4 +95,21 @@ function gpsHoje_() {
 
 function gpsIncluir_(arquivo) {
   return HtmlService.createHtmlOutputFromFile(arquivo).getContent();
+}
+
+
+function gpsEscopoEscolas_(base, perfil) {
+  if (perfil.papel === 'CEC') return null;
+  const vinculos = perfil.papel === 'AT'
+    ? gpsTabela_(base, 'escopos_at').registros.filter(r => r.usuario_id === perfil.id)
+    : gpsTabela_(base, 'atribuicoes').registros.filter(r => r.pec_id === perfil.pec_id);
+  return new Set(vinculos.map(r => r.escola_id));
+}
+
+function gpsFarolSaresp_(registro) {
+  if (registro.fonte !== 'saresp' || registro.metrica !== 'nota' ||
+      registro.escala !== 'saresp:nota:' + registro.ano || !registro.farolValidado || !String(registro.valor ?? '').trim()) return '—';
+  const valor = Number(String(registro.valor).replace(',', '.'));
+  if (!Number.isFinite(valor) || valor < 0 || valor > 10) return '—';
+  return valor <= 4 ? 'Vermelho' : valor <= 6 ? 'Amarelo' : 'Verde';
 }

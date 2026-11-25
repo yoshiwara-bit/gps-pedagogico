@@ -9,7 +9,7 @@
   .gps-barra { height: .4rem; width: 9rem; }
   dialog { color: inherit; max-width: min(34rem, 90vw); }
 </style>
-<section class="gps-bloco">
+<section class="gps-bloco" data-pagina="territorio" hidden>
   <h2>Acompanhamento territorial</h2>
   <form id="gps-filtros" class="gps-grade">
     <label>Escola<select name="escola_id"></select></label>
@@ -30,7 +30,8 @@
     <div id="gps-calor" class="tabela"><table aria-label="Calor temporal"><tbody id="gps-heat"></tbody></table></div>
   </details>
 </section>
-<section class="gps-bloco" id="gps-atuacao" hidden>
+<section data-pagina="registros" hidden>
+<div class="gps-bloco" id="gps-atuacao" hidden>
   <h2>Registrar atuação</h2>
   <details><summary>Plano de Trabalho</summary>
     <form id="gps-plano" class="gps-grade">
@@ -56,8 +57,9 @@
     </form>
     <p id="gps-termo-estado" role="status"></p>
   </details>
+</div>
+<div class="gps-bloco"><button id="gps-abrir-alertas" type="button" hidden>Ver alertas</button></div>
 </section>
-<section class="gps-bloco"><button id="gps-abrir-alertas" type="button" hidden>Ver alertas</button>
   <dialog id="gps-alertas">
     <h2>Avisos de acompanhamento</h2>
     <form id="gps-justificar" class="gps-grade">
@@ -68,7 +70,6 @@
     </form>
     <p id="gps-alerta-estado" role="status"></p>
   </dialog>
-</section>
 <script>
 (() => {
   const el = id => document.getElementById(id);
@@ -79,6 +80,7 @@
   const justificativa = el('gps-justificar');
   const dialogo = el('gps-alertas');
   let numeroConsulta = 0;
+  let resumoInicial = true;
   function rpc(nome, argumentos, sucesso, estado) {
     google.script.run.withSuccessHandler(sucesso).withFailureHandler(erro => {
       if (estado) el(estado).textContent = erro.message || 'Operação indisponível.';
@@ -94,6 +96,11 @@
   }
   function renderizar(dados) {
     const { resumo, pontos, periodos, calor } = dados;
+    if (resumoInicial) {
+      el('gps-total-escolas').textContent = pontos.length;
+      for (const campo of ['previstas', 'contabilizadas', 'comprovadas']) el('gps-total-' + campo).textContent = resumo[campo];
+      resumoInicial = false;
+    }
     el('gps-territorio-estado').textContent =
       `${resumo.previstas} previstas · ${resumo.contabilizadas} contabilizadas · ${resumo.comprovadas} comprovadas`;
     const mapa = el('gps-mapa');
@@ -214,7 +221,11 @@
       el('gps-revisao-estado').textContent = 'Indicador validado.';
     }, 'gps-revisao-estado');
   });
-  alertas(!sessionStorage.getItem('gps-alertas-abertos'));
-  dialogo.addEventListener('close', () => sessionStorage.setItem('gps-alertas-abertos', 'true'));
+  let jaAbriu = false;
+  try { jaAbriu = sessionStorage.getItem('gps-alertas-abertos') === 'true'; } catch {}
+  alertas(!jaAbriu);
+  dialogo.addEventListener('close', () => {
+    try { sessionStorage.setItem('gps-alertas-abertos', 'true'); } catch {}
+  });
 })();
 </script>

@@ -15,6 +15,7 @@ const GPS_SCHEMA = {
   justificativas: ['visita_id', 'motivo', 'status', 'alerta_id', 'pec_id'],
   encaminhamentos: ['alerta_id', 'acao', 'prazo', 'status'],
   revisoes: ['documento_id', 'motivo', 'status'],
+  escopos_at: ['usuario_id', 'escola_id'],
   usuarios: ['email', 'perfil', 'pec_id', 'ativo'],
   fila: ['documento_id', 'origem', 'status', 'tentativas', 'versao'],
   criterios: ['fonte', 'metrica', 'escala', 'nivel', 'direcao', 'limite', 'versao', 'aprovado_cec'],

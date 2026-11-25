@@ -35,3 +35,10 @@ Etapas 13–18 (base, cruzamento/metas, alertas, sincronização, desempenho con
 - Valide a migração de cabeçalhos em laboratório. Mantenha as propriedades de IDs privadas. Use somente a pasta isolada, com arquivos sintéticos, para ensaiar sincronização e OCR.
 - Mantenha `GPS_LAB_AUTOMACAO` e `GPS_LAB_EMAIL` desativadas por padrão. Em testes use um emissor falso. Confira manualmente estados de envio reservado antes de qualquer reenvio.
 - A interface deve confirmar identidade e escopo no servidor antes de retornar dados ou gravar. Cache não substitui autorização. Use testes sintéticos para toda mudança de perfil ou deduplicação.
+
+## Publicação experimental
+
+- Instale a Web App em projeto isolado usando `GUIA_INSTALACAO_EXPERIMENTAL.md`. A fonte fica em `src/`. Mantenha o modo demonstração, gatilhos e envios reais desativados.
+- CEC tem consulta geral e revisão, PEC acessa sua atuação atribuída e AT tem consulta somente nas escolas vinculadas em `escopos_at`. Verifique identidade e autorização no servidor.
+- Gere somente dados sintéticos na demonstração. Endereços de contas autorizadas pertencem somente à aba privada `usuarios`. Mantenha propriedades, base e pasta privadas.
+- Execute `node --test tests/*.test.cjs` e o ensaio de Chromium em `tests/interface-smoke.cjs` quando Playwright estiver disponível. Valide separadamente a URL /exec com contas autorizadas no Workspace.

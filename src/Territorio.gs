@@ -45,11 +45,11 @@ function gpsDadosTerritorio(filtro) {
       !['', 'visita', 'apoio'].includes(filtro.tipo)) throw new Error('Filtro inválido');
   const hoje = gpsHoje_();
   const escopo = perfil.papel === 'CEC' ? '' : perfil.pec_id;
-  const consulta = { ...filtro, pec_id: escopo || filtro.pec_id };
-  const visiveis = escopo ? new Set(gpsTabela_(base, 'atribuicoes').registros.filter(r => r.pec_id === escopo)
-    .map(r => r.escola_id)) : null;
+  const consulta = { ...filtro, pec_id: perfil.papel === 'AT' ? '' : escopo || filtro.pec_id,
+    pasta_id: perfil.papel === 'AT' ? '' : filtro.pasta_id };
+  const visiveis = gpsEscopoEscolas_(base, perfil);
   const chave = 'territorio:' + Utilities.base64EncodeWebSafe(Utilities.computeDigest(
-    Utilities.DigestAlgorithm.SHA_256, JSON.stringify([base.getId(), escopo, hoje, consulta, visiveis ? [...visiveis].sort() : null])));
+    Utilities.DigestAlgorithm.SHA_256, JSON.stringify([base.getId(), perfil.papel, escopo, hoje, consulta, visiveis ? [...visiveis].sort() : null])));
   const cache = CacheService.getScriptCache();
   const hit = cache.get(chave);
   if (hit) return JSON.parse(hit);
@@ -66,16 +66,16 @@ function gpsOpcoesTerritorio() {
   const escopo = perfil.papel === 'CEC' ? '' : perfil.pec_id;
   const atribuicoes = escopo ? gpsTabela_(base, 'atribuicoes').registros.filter(r => r.pec_id === escopo) : [];
   const ids = campo => new Set(atribuicoes.map(r => r[campo]));
-  const escolasIds = ids('escola_id');
-  const escolas = gpsTabela_(base, 'escolas').registros.filter(r => !escopo || escolasIds.has(r.id));
+  const escolasIds = gpsEscopoEscolas_(base, perfil);
+  const escolas = gpsTabela_(base, 'escolas').registros.filter(r => !escolasIds || escolasIds.has(r.id));
   const municipios = new Set(escolas.map(r => r.municipio_id));
   const pastas = ids('pasta_id');
   const opcoes = registros => registros.map(({ id, nome }) => ({ id, nome }));
   return {
     hoje: gpsHoje_(), escolas: opcoes(escolas),
-    municipios: opcoes(gpsTabela_(base, 'municipios').registros.filter(r => !escopo || municipios.has(r.id))),
-    pecs: opcoes(gpsTabela_(base, 'pecs').registros.filter(r => !escopo || r.id === escopo)),
-    pastas: opcoes(gpsTabela_(base, 'pastas').registros.filter(r => !escopo || pastas.has(r.id)))
+    municipios: opcoes(gpsTabela_(base, 'municipios').registros.filter(r => !escolasIds || municipios.has(r.id))),
+    pecs: perfil.papel === 'AT' ? [] : opcoes(gpsTabela_(base, 'pecs').registros.filter(r => !escopo || r.id === escopo)),
+    pastas: perfil.papel === 'AT' ? [] : opcoes(gpsTabela_(base, 'pastas').registros.filter(r => !escopo || pastas.has(r.id)))
   };
 }
 

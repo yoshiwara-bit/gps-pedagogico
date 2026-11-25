@@ -75,7 +75,7 @@ function gpsImportarItemFila_(base, item) {
 function gpsSincronizarLaboratorio_() {
   const props = PropertiesService.getScriptProperties();
   const pasta = props.getProperty('GPS_LAB_FOLDER_ID');
-  if (props.getProperty('GPS_LAB_AUTOMACAO') !== 'true' || !pasta) return;
+  if (gpsModoDemonstracao_() || props.getProperty('GPS_LAB_AUTOMACAO') !== 'true' || !pasta) return;
   gpsComTrava_(() => {
     const base = gpsAbrirBase_();
     const chave = GPS_SINCRONIZACAO + '_' + pasta;
@@ -125,7 +125,7 @@ function gpsSincronizarLaboratorio_() {
 
 function gpsConfigurarGatilhoLaboratorio_() {
   const props = PropertiesService.getScriptProperties();
-  if (props.getProperty('GPS_LAB_AUTOMACAO') !== 'true') throw new Error('Automação de laboratório desabilitada');
+  if (gpsModoDemonstracao_() || props.getProperty('GPS_LAB_AUTOMACAO') !== 'true') throw new Error('Automação de laboratório desabilitada');
   gpsComTrava_(() => {
     const existe = ScriptApp.getProjectTriggers().some(t => t.getHandlerFunction() === 'gpsSincronizarLaboratorio_');
     if (!existe) ScriptApp.newTrigger('gpsSincronizarLaboratorio_').timeBased().everyMinutes(5).create();
@@ -136,7 +136,7 @@ function gpsConfigurarGatilhoLaboratorio_() {
 function gpsReabrirErroFilaLaboratorio_() {
   const props = PropertiesService.getScriptProperties();
   const id = props.getProperty('GPS_LAB_REPROCESSAR_ID');
-  if (!id || props.getProperty('GPS_LAB_AUTOMACAO') !== 'true') throw new Error('Reprocessamento indisponível');
+  if (gpsModoDemonstracao_() || !id || props.getProperty('GPS_LAB_AUTOMACAO') !== 'true') throw new Error('Reprocessamento indisponível');
   gpsComTrava_(() => {
     const base = gpsAbrirBase_();
     const item = gpsTabela_(base, 'fila').registros.find(r => r.id === id && r.status === 'erro');

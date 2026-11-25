@@ -24,7 +24,7 @@ function gpsAvisosFormulario(dados) {
 
 function gpsValidarAtividadeWeb_(base, perfil, dados) {
   const { escola_id, componente_id, turma_id, pasta_id, data, tipo } = dados || {};
-  if (!perfil.pec_id || !gpsDataValida_(data) || !['visita', 'apoio'].includes(tipo) ||
+  if (perfil.papel === 'AT' || !perfil.pec_id || !gpsDataValida_(data) || !['visita', 'apoio'].includes(tipo) ||
       !escola_id || !componente_id || !pasta_id) throw new Error('Preencha os campos obrigatórios');
   const ano = gpsTabela_(base, 'anos_letivos').registros.find(r => Number(r.ano) === Number(data.slice(0, 4)));
   const atribuida = ano && gpsTabela_(base, 'atribuicoes').registros.some(r =>
@@ -61,6 +61,7 @@ function gpsSalvarPlano(dados) {
 
 function gpsContextoTermo(id) {
   const { base, perfil } = gpsSessao_();
+  if (perfil.papel === 'AT') throw new Error('Perfil de consulta');
   const visita = gpsTabela_(base, 'visitas').registros.find(r => r.id === id && r.pec_id === perfil.pec_id);
   if (!visita) throw new Error('Visita indisponível');
   const avisos = gpsPrioridadesBase_(base, Number(visita.data.slice(0, 4))).filter(r =>
@@ -72,6 +73,7 @@ function gpsContextoTermo(id) {
 function gpsSalvarTermo(dados) {
   return gpsComTrava_(() => {
     const { base, perfil } = gpsSessao_();
+    if (perfil.papel === 'AT') throw new Error('Perfil de consulta');
     const visita = gpsTabela_(base, 'visitas').registros.find(r => r.id === dados.visita_id && r.pec_id === perfil.pec_id);
     if (!visita || visita.data > gpsHoje_() || visita.status === 'cancelada') throw new Error('Visita indisponível');
     if (!['termo_visita', 'ficha_visita'].includes(dados.tipo)) throw new Error('Tipo de evidência inválido');
@@ -85,6 +87,7 @@ function gpsSalvarTermo(dados) {
 
 function gpsMinhasOpcoes() {
   const { base, perfil } = gpsSessao_();
+  if (perfil.papel === 'AT') return { papel: 'AT', escolas: [], pastas: [], componentes: [], turmas: [], visitas: [] };
   const atribuicoes = gpsTabela_(base, 'atribuicoes').registros.filter(r => r.pec_id === perfil.pec_id);
   const opcoes = (tabela, ids) => gpsTabela_(base, tabela).registros.filter(r => !ids || ids.has(r.id))
     .map(r => ({ id: r.id, nome: r.nome || r.codigo || r.id }));
