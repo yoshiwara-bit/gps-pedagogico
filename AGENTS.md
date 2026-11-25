@@ -18,3 +18,12 @@ Trabalhar somente na branch gps-2-apps-script. Não alterar main, não implantar
 4. Documentar em RELATORIO_DESENVOLVIMENTO.md testes executados, resultados, limitações, decisões e próximos passos. Não declarar resolvido o que depende de execução real no Apps Script. Não fazer merge na main.
 
 Etapas 13–18 (base, cruzamento/metas, alertas, sincronização, desempenho concorrente, especificações finais) ainda pendentes. Priorizar correções dos importadores e proposta de base; não presumir regras de negócio ausentes.
+
+## Regras da reconstrução GPS 2.0
+
+- Use o projeto Apps Script V8 em `src/`, com HTML/CSS/JavaScript, Google Sheets e Drive avançado v3. Use Node somente para verificações locais. Mantenha o código Streamlit e GPS_LAB.gs como referência.
+- A exceção à regra histórica de granularidade é a Prova Paulista consolidada por turma. Preserve a origem, o período, os níveis e a escala de cada indicador. Dados individuais de estudantes ficam fora da base. Critérios só entram em uso com aprovação do CEC.
+- Trate projeções SARESP e SAEB como referências agregadas. Preserve ano e série de aplicação. Não deduza vínculos individuais nem permanência na escola com base na projeção.
+- Separe previsão, contabilização pelo planejamento e comprovação. Ficha e termo podem comprovar uma única visita. Ausência de um deles gera pendência. Recomendações não geram cobrança obrigatória.
+- Teste com planilha, pasta e documentos sintéticos. Use script properties para os IDs privados. Revise permissão por perfil antes de liberar qualquer dado. Testes devem usar notificações simuladas, sem e-mails reais.
+- Execute `node --test tests/*.test.cjs` e atualize `RELATORIO_DESENVOLVIMENTO.md` com evidências e limites da validação.

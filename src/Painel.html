@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root { color: #173344; background: #f4f7f8; font: 16px system-ui, sans-serif; }
+  body { max-width: 75rem; margin: auto; padding: clamp(1rem, 4vw, 3rem); }
+  h1 { margin: .25rem 0 1.5rem; }
+  label { font-weight: 600; }
+  select, button { font: inherit; color: inherit; padding: .55rem; }
+  button { cursor: pointer; }
+  .tabela { overflow-x: auto; border: 1px solid #c8d5d9; background: white; }
+  table { border-collapse: collapse; width: 100%; text-align: left; }
+  th, td { padding: .7rem; white-space: nowrap; border-bottom: 1px solid #e0e8eb; }
+  th { background: #e8eff1; }
+  #mais { margin-top: .75rem; }
+</style>
+</head>
+<body>
+<header>
+  <p>URE Miracatu</p>
+  <h1>GPS Pedagógico 2.0</h1>
+</header>
+<main>
+  <label for="secao">Painel</label>
+  <select id="secao">
+    <option value="escolas">Escolas</option>
+    <option value="municipios">Municípios</option>
+    <option value="pecs">PECs</option>
+    <option value="prioridades">Prioridades</option>
+    <option value="metas">Metas</option>
+    <option value="visitas">Visitas</option>
+    <option value="apoios">Apoios</option>
+    <option value="alertas">Alertas</option>
+  </select>
+  <p id="estado" role="status"></p>
+  <div class="tabela" hidden><table><thead></thead><tbody></tbody></table></div>
+  <button id="mais" type="button" hidden>Carregar próxima página</button>
+</main>
+<script>
+  const secao = document.querySelector('#secao');
+  const mais = document.querySelector('#mais');
+  const estado = document.querySelector('#estado');
+  const cabecalho = document.querySelector('thead');
+  const corpo = document.querySelector('tbody');
+  const tabela = document.querySelector('.tabela');
+  let proximo = 0;
+  let requisicao = 0;
+
+  function acrescentarLinha(destino, campos, tipo) {
+    const linha = destino.insertRow();
+    for (const campo of campos) {
+      const celula = document.createElement(tipo);
+      if (tipo === 'th') celula.scope = 'col';
+      celula.textContent = campo;
+      linha.append(celula);
+    }
+  }
+
+  function carregar(reiniciar = false) {
+    const atual = ++requisicao;
+    if (reiniciar) {
+      proximo = 0;
+      cabecalho.replaceChildren();
+      corpo.replaceChildren();
+      tabela.hidden = true;
+    }
+    mais.disabled = true;
+    estado.textContent = 'Carregando…';
+    google.script.run.withSuccessHandler(pagina => {
+      if (atual !== requisicao) return;
+      if (!cabecalho.rows.length) acrescentarLinha(cabecalho, pagina.campos, 'th');
+      for (const valores of pagina.linhas) acrescentarLinha(corpo, valores, 'td');
+      proximo = pagina.proximo;
+      tabela.hidden = !corpo.rows.length;
+      mais.hidden = proximo === null;
+      mais.disabled = false;
+      estado.textContent = corpo.rows.length ? '' :
+        proximo === null ? 'Nenhum registro disponível.' : 'Nenhum registro nesta página.';
+    }).withFailureHandler(() => {
+      if (atual !== requisicao) return;
+      mais.hidden = true;
+      estado.textContent = 'Consulta indisponível. Selecione a seção novamente para tentar.';
+    }).gpsCarregarPainel(secao.value, proximo);
+  }
+
+  secao.addEventListener('change', () => carregar(true));
+  mais.addEventListener('click', () => carregar());
+  carregar(true);
+</script>
+</body>
+</html>
