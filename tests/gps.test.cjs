@@ -235,3 +235,136 @@ test('leitura PDF limita a origem e envia apenas temporários criados à lixeira
   assert.equal(doc.imagens[1].motivo, 'image_id_invalido');
   assert.deepEqual(lixeira, ['temporario-imagem', 'temporario-pdf']);
 });
+
+test('histórico por escola diferencia persistência, emergência e ausência de referência escolar', () => {
+  const base = { componente_id: 'LP', metrica: 'nota' };
+  const historicos = [2, 7].map((valor, i) => ({ ...base, id: 'H' + i, fonte: 'saresp', ano: 2025,
+    serie: 'EF7', escola_id: 'E' + i, valor, escala: 's' }));
+  const atuais = [0, 1, 2].map(i => ({ ...base, id: 'A' + i, fonte: 'prova_paulista', ano: 2026,
+    serie: 'EF8', escola_id: 'E' + i, turma_id: 'T' + i, valor: 40, escala: 'p' }));
+  const regras = [
+    { fonte: 'saresp', metrica: 'nota', escala: 's', direcao: 'abaixo', limite: 4 },
+    { fonte: 'prova_paulista', metrica: 'nota', escala: 'p', direcao: 'abaixo', limite: 60 }
+  ];
+  const saida = plain(gps.gpsSelecionarPrioridades_([...historicos, ...atuais], { aprovadaCEC: true, versao: 'v1', regras }, 2026));
+  assert.deepEqual(saida.map(r => [r.diagnostico, r.referencias_escola]), [
+    ['persistente', ['H0']], ['emergente', ['H1']], ['sem_historico_escolar', []]
+  ]);
+  assert.deepEqual(saida[2].referencias_historicas, ['H0']);
+});
+
+test('adaptadores leem grade em ordem variável e isolam OCR e SAEB par', () => {
+  const cabecalho = ['Componente', 'Etapa', 'Código da Escola', 'Ano', 'Participação', 'Proficiência média'];
+  const saeb = gps.gpsExtrairBoletim_({ grades: [[cabecalho,
+    ['LP', '1ª série do Ensino Médio', 'E', '2025', '102,5%', '260,5'],
+    ['MAT', '9º ano', 'E', '2024', '90%', '245']]], imagens: [{ revisar: true }] }, 'saeb', 'D');
+  assert.deepEqual(plain(saeb.indicadores.map(r => [r.serie, r.metrica, r.valor, r.revisar])),
+    [['EM1', 'proficiencia', 260.5, false], ['EM1', 'participacao', 102.5, true]]);
+  assert.ok(saeb.revisoes.some(r => r.motivo === 'ocr_requer_conferencia'));
+  const saresp = gps.gpsExtrairBoletim_({ grades: [[['Série', 'Código SEDUC', 'Disciplina', 'Edição', 'Nota média'],
+    ['7º ano', 'E', 'LP', '2024', '4,5']]] }, 'saresp', 'S');
+  assert.equal(saresp.indicadores[0].escala, 'saresp:nota:2024');
+});
+
+test('exportação alternativa mantém revisão humana e não troca imagens de ordem ambígua', () => {
+  const imagens = [{ ordem: 1, revisar: true, motivo: 'image_id_invalido' }, { ordem: 2, texto: 'anterior' }];
+  gps.Drive = { Files: { export: () => 'zip' } };
+  const imagem = { getName: () => 'images/img.png' };
+  const html = src => ({ getName: () => 'index.html', getDataAsString: () => src });
+  gps.Utilities = { unzip: () => [html('<img src="images/img.png"><img src="images/img.png">'), imagem] };
+  assert.equal(gps.gpsRecuperarImagensExportadas_('D', imagens, 'lab'), imagens);
+  gps.Utilities.unzip = () => [html('<img src="images/img.png"><img src="images/outro.png">'), imagem];
+  const original = gps.gpsOCRBlob_;
+  gps.gpsOCRBlob_ = blob => { assert.equal(blob, imagem); return ' recuperada '; };
+  try {
+    const resultado = gps.gpsRecuperarImagensExportadas_('D', imagens, 'lab');
+    assert.equal(resultado[0].texto, 'recuperada');
+    assert.equal(resultado[0].revisar, true);
+    assert.equal(resultado[1].texto, 'anterior');
+  } finally {
+    gps.gpsOCRBlob_ = original;
+  }
+});
+
+test('janela incremental mantém limite entre páginas e exclui temporários', () => {
+  const limite = '2026-11-25T10:00:00.000Z';
+  const inicio = '2026-11-24T10:00:00.000Z';
+  const primeira = gps.gpsDescobrirPagina_('folder', { desde: inicio }, limite, consulta => {
+    assert.match(consulta.q, /modifiedTime >= '2026-11-24/);
+    assert.match(consulta.q, /modifiedTime < '2026-11-25/);
+    return { nextPageToken: 'p2', files: [
+      { id: 'origem', version: '1' }, { id: 'temp', version: '1', appProperties: { gpsTemporario: 'true' } }
+    ] };
+  });
+  assert.equal(primeira.entradas.length, 1);
+  const segunda = gps.gpsDescobrirPagina_('folder', primeira.proximo, '2026-11-25T10:05:00.000Z', consulta => {
+    assert.equal(consulta.pageToken, 'p2');
+    assert.ok(consulta.q.includes(limite));
+    return { files: [] };
+  });
+  assert.deepEqual(plain(segunda.proximo), { desde: limite });
+  assert.throws(() => gps.gpsDescobrirPagina_('folder', {}, limite, () => ({ incompleteSearch: true })), /incompleta/);
+});
+
+test('agregação territorial separa situações e aplica filtros', () => {
+  const escolas = [{ id: '1', nome: 'Sintética', latitude: '', longitude: -47, municipio_id: 'M' }];
+  const agenda = [
+    { escola_id: '1', pasta_id: 'A', data: '2026-11-04', tipo: 'visita', contabilizada: true, comprovada: true },
+    { escola_id: '1', pasta_id: 'A', data: '2026-11-24', tipo: 'visita' },
+    { escola_id: '1', pasta_id: 'B', data: '2026-11-24', tipo: 'apoio' }
+  ];
+  const filtro = { municipio_id: 'M', pasta_id: 'A', inicio: '2026-11-01', fim: '2026-11-30', granularidade: 'quinzenal' };
+  const resultado = gps.gpsAgregarTerritorio_(escolas, agenda, filtro);
+  assert.deepEqual(plain(resultado.resumo), { previstas: 2, contabilizadas: 1, comprovadas: 1 });
+  assert.deepEqual(plain(resultado.periodos.map(r => r.periodo)), ['2026-11 / 1', '2026-11 / 2']);
+  assert.equal(resultado.pontos[0].latitude, null);
+  assert.equal(gps.gpsFaixaGrafico_('2026-11-01', 'semanal'), '2026-10-26');
+  assert.equal(gps.gpsFaixaGrafico_('2026-11-01', 'ano'), '2026');
+});
+
+test('metas usam semana e quinzena já encerradas inclusive na virada do mês', () => {
+  assert.deepEqual(plain(gps.gpsPeriodoFechado_('2026-03-01', 'quinzena')),
+    { inicio: '2026-02-16', fim: '2026-02-28', hoje: '2026-03-01' });
+  assert.deepEqual(plain(gps.gpsPeriodoFechado_('2026-11-25', 'semana')),
+    { inicio: '2026-11-16', fim: '2026-11-22', hoje: '2026-11-25' });
+});
+
+test('cadastro territorial descarta endereço e recusa coordenadas ausentes', () => {
+  const campos = ['codigo_seduc', 'escola', 'municipio', 'latitude', 'longitude', 'logradouro'];
+  const escola = ['11', 'Escola sintética', 'Município sintético', '-24,2', '-47,4', 'endereço de teste'];
+  const resultado = gps.gpsCadastroTerritorial_([campos, escola]);
+  assert.equal(resultado.escolas[0].latitude, -24.2);
+  assert.equal(resultado.escolas[0].longitude, -47.4);
+  assert.equal(resultado.escolas[0].logradouro, undefined);
+  assert.throws(() => gps.gpsCadastroTerritorial_([campos, escola, escola]), /duplicado/);
+  assert.throws(() => gps.gpsCadastroTerritorial_([campos, ['12', 'E', 'M', '', '-47']]), /ausente/);
+});
+
+test('alertas persistidos não repetem e-mail reservado após falha ambígua', () => {
+  const nomes = ['gpsTabela_', 'gpsSinaisAtuacao_', 'gpsAtualizarEstado_', 'gpsAuditar_'];
+  const preservar = Object.fromEntries(nomes.map(nome => [nome, gps[nome]]));
+  const planilhaAnterior = gps.SpreadsheetApp;
+  const registros = [];
+  gps.SpreadsheetApp = { flush() {} };
+  gps.gpsTabela_ = (_, tabela) => ({ registros: tabela === 'usuarios'
+    ? [{ id: 'U', ativo: true, perfil: 'PEC', pec_id: 'P', email: 'teste@example.invalid' }]
+    : registros });
+  gps.gpsSinaisAtuacao_ = () => [{ tipo: 'termo_pendente', alvo_id: 'V', periodo: '2026-11-01', destinatario_id: 'P' }];
+  gps.gpsAtualizarEstado_ = (_, nome, anterior, item) => {
+    assert.equal(nome, 'alertas');
+    if (anterior) registros[anterior._linha - 2] = { ...item, _linha: anterior._linha };
+    else registros.push({ ...item, _linha: registros.length + 2 });
+  };
+  gps.gpsAuditar_ = () => {};
+  const tentativas = [];
+  try {
+    const emissor = endereco => { tentativas.push(endereco); throw new Error('Falha sintética após reserva'); };
+    gps.gpsExecutarAlertas_({}, '2026-11-01', emissor);
+    gps.gpsExecutarAlertas_({}, '2026-11-02', emissor);
+    gps.gpsExecutarAlertas_({}, '2026-11-10', emissor);
+    assert.deepEqual(tentativas, ['teste@example.invalid']);
+    assert.equal(registros[0].envio, 'reservado');
+  } finally {
+    Object.assign(gps, preservar, { SpreadsheetApp: planilhaAnterior });
+  }
+});

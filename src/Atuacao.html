@@ -1,0 +1,220 @@
+<style>
+  .gps-bloco { background: white; border: 1px solid #c8d5d9; border-radius: .5rem; padding: 1rem; margin: 1rem 0; }
+  .gps-grade { display: grid; gap: .75rem; grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr)); }
+  .gps-grade label { display: grid; gap: .3rem; }
+  textarea, input { color: inherit; font: inherit; padding: .5rem; width: 100%; box-sizing: border-box; }
+  #gps-mapa { width: 100%; max-width: 46rem; background: #edf4f2; }
+  #gps-mapa circle { cursor: pointer; }
+  #gps-calor { max-height: 22rem; overflow: auto; }
+  .gps-barra { height: .4rem; width: 9rem; }
+  dialog { color: inherit; max-width: min(34rem, 90vw); }
+</style>
+<section class="gps-bloco">
+  <h2>Acompanhamento territorial</h2>
+  <form id="gps-filtros" class="gps-grade">
+    <label>Escola<select name="escola_id"></select></label>
+    <label>Município<select name="municipio_id"></select></label>
+    <label>PEC<select name="pec_id"></select></label>
+    <label>Pasta<select name="pasta_id"></select></label>
+    <label>De<input name="inicio" type="date" required></label>
+    <label>Até<input name="fim" type="date" required></label>
+    <label>Atividade<select name="tipo"><option value="">Todas</option><option value="visita">Visitas</option><option value="apoio">Apoios</option></select></label>
+    <label>Agrupamento<select name="granularidade"><option value="semanal">Semana</option><option value="quinzenal">Quinzena</option><option value="mensal" selected>Mês</option><option value="ano">Ano</option></select></label>
+    <button>Aplicar filtros</button>
+  </form>
+  <p id="gps-territorio-estado" role="status"></p>
+  <svg id="gps-mapa" viewBox="0 0 600 320" aria-label="Posição relativa das escolas por latitude e longitude"></svg>
+  <p id="gps-mapa-estado" role="status"></p>
+  <div class="tabela"><table aria-label="Gráfico por período"><tbody id="gps-grafico"></tbody></table></div>
+  <details><summary>Mapa de calor temporal por escola</summary>
+    <div id="gps-calor" class="tabela"><table aria-label="Calor temporal"><tbody id="gps-heat"></tbody></table></div>
+  </details>
+</section>
+<section class="gps-bloco" id="gps-atuacao" hidden>
+  <h2>Registrar atuação</h2>
+  <details><summary>Plano de Trabalho</summary>
+    <form id="gps-plano" class="gps-grade">
+      <label>Escola<select name="escola_id" required></select></label>
+      <label>Pasta<select name="pasta_id" required></select></label>
+      <label>Componente<select name="componente_id" required></select></label>
+      <label>Turma<select name="turma_id"></select></label>
+      <label>Data<input name="data" type="date" required></label>
+      <label>Horário<input name="horario" type="time"></label>
+      <label>Atividade<select name="tipo"><option value="visita">Visita</option><option value="apoio">Apoio presencial</option></select></label>
+      <label>Objetivo pedagógico<textarea name="objetivo" maxlength="1000" required></textarea></label>
+      <button type="button" id="gps-verificar">Verificar prioridades</button>
+      <button>Salvar atividade</button>
+    </form>
+    <p id="gps-plano-estado" role="status"></p>
+  </details>
+  <details><summary>Termo ou ficha de visita</summary>
+    <form id="gps-termo" class="gps-grade">
+      <label>Visita<select name="visita_id" required></select></label>
+      <label>Tipo<select name="tipo"><option value="termo_visita">Termo</option><option value="ficha_visita">Ficha</option></select></label>
+      <label>Evidência pedagógica<textarea name="observacao" maxlength="1000" required></textarea></label>
+      <button>Registrar evidência</button>
+    </form>
+    <p id="gps-termo-estado" role="status"></p>
+  </details>
+</section>
+<section class="gps-bloco"><button id="gps-abrir-alertas" type="button" hidden>Ver alertas</button>
+  <dialog id="gps-alertas">
+    <h2>Avisos de acompanhamento</h2>
+    <form id="gps-justificar" class="gps-grade">
+      <label>Alerta<select name="id" required></select></label>
+      <label>Justificativa<textarea name="motivo" required maxlength="1000"></textarea></label>
+      <button>Registrar justificativa</button>
+      <button type="button" id="gps-fechar-alertas">Fechar</button>
+    </form>
+    <p id="gps-alerta-estado" role="status"></p>
+  </dialog>
+</section>
+<script>
+(() => {
+  const el = id => document.getElementById(id);
+  const formData = form => Object.fromEntries(new FormData(form));
+  const filtros = el('gps-filtros');
+  const plano = el('gps-plano');
+  const termo = el('gps-termo');
+  const justificativa = el('gps-justificar');
+  const dialogo = el('gps-alertas');
+  let numeroConsulta = 0;
+  function rpc(nome, argumentos, sucesso, estado) {
+    google.script.run.withSuccessHandler(sucesso).withFailureHandler(erro => {
+      if (estado) el(estado).textContent = erro.message || 'Operação indisponível.';
+    })[nome](...argumentos);
+  }
+  function preencher(select, itens, todos) {
+    select.replaceChildren(new Option(todos, ''), ...itens.map(r => new Option(r.nome, r.id)));
+  }
+  function linha(destino, valores) {
+    const tr = destino.insertRow();
+    for (const valor of valores) tr.insertCell().textContent = valor;
+    return tr;
+  }
+  function renderizar(dados) {
+    const { resumo, pontos, periodos, calor } = dados;
+    el('gps-territorio-estado').textContent =
+      `${resumo.previstas} previstas · ${resumo.contabilizadas} contabilizadas · ${resumo.comprovadas} comprovadas`;
+    const mapa = el('gps-mapa');
+    mapa.replaceChildren();
+    const locais = pontos.filter(p => Number.isFinite(p.latitude) && Number.isFinite(p.longitude));
+    el('gps-mapa-estado').textContent = `${locais.length} de ${pontos.length} escolas com coordenadas`;
+    const escala = (valor, conjunto, tamanho) => {
+      const menor = Math.min(...conjunto);
+      const maior = Math.max(...conjunto);
+      return menor === maior ? tamanho / 2 : 20 + (valor - menor) * (tamanho - 40) / (maior - menor);
+    };
+    const maximo = Math.max(1, ...pontos.map(r => r.contabilizadas));
+    for (const p of locais) {
+      const ponto = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+      ponto.setAttribute('cx', escala(p.longitude, locais.map(r => r.longitude), 600));
+      ponto.setAttribute('cy', 320 - escala(p.latitude, locais.map(r => r.latitude), 320));
+      ponto.setAttribute('r', 5 + 10 * p.contabilizadas / maximo);
+      ponto.setAttribute('fill', p.contabilizadas ? '#087b73' : '#526a76');
+      ponto.setAttribute('tabindex', '0');
+      ponto.setAttribute('role', 'button');
+      ponto.setAttribute('aria-label', p.nome);
+      const selecionar = () => {
+        filtros.elements.escola_id.value = p.id;
+        consultar();
+      };
+      ponto.addEventListener('click', selecionar);
+      ponto.addEventListener('keydown', evento => { if (['Enter', ' '].includes(evento.key)) { evento.preventDefault(); selecionar(); } });
+      mapa.append(ponto);
+    }
+    const grafico = el('gps-grafico');
+    grafico.replaceChildren();
+    linha(grafico, ['Período', 'Previstas', 'Contabilizadas', 'Comprovadas']);
+    const pico = Math.max(1, ...periodos.map(p => p.previstas));
+    for (const p of periodos) {
+      const tr = linha(grafico, [p.periodo]);
+      for (const campo of ['previstas', 'contabilizadas', 'comprovadas']) {
+        const celula = tr.insertCell();
+        const barra = document.createElement('progress');
+        barra.className = 'gps-barra';
+        barra.value = p[campo]; barra.max = pico;
+        barra.setAttribute('aria-label', campo);
+        celula.append(document.createTextNode(p[campo] + ' '), barra);
+      }
+    }
+    const heat = el('gps-heat');
+    heat.replaceChildren();
+    linha(heat, ['Escola', 'Período', 'Previstas', 'Contabilizadas', 'Comprovadas']);
+    const nomes = new Map(pontos.map(r => [r.id, r.nome]));
+    const intensidade = Math.max(1, ...calor.map(r => r.contabilizadas));
+    for (const p of calor) {
+      const tr = linha(heat, [nomes.get(p.escola_id), p.periodo, p.previstas, p.contabilizadas, p.comprovadas]);
+      tr.cells[3].style.backgroundColor = `rgba(8, 123, 115, ${.65 * p.contabilizadas / intensidade})`;
+    }
+  }
+  function consultar() {
+    const atual = ++numeroConsulta;
+    rpc('gpsDadosTerritorio', [formData(filtros)], dados => { if (atual === numeroConsulta) renderizar(dados); }, 'gps-territorio-estado');
+  }
+  filtros.addEventListener('submit', evt => { evt.preventDefault(); consultar(); });
+  rpc('gpsOpcoesTerritorio', [], dados => {
+    for (const [campo, itens] of Object.entries({ escola_id: dados.escolas, municipio_id: dados.municipios, pec_id: dados.pecs, pasta_id: dados.pastas })) {
+      preencher(filtros.elements[campo], itens, 'Todos');
+    }
+    filtros.elements.inicio.value = dados.hoje.slice(0, 4) + '-01-01';
+    filtros.elements.fim.value = dados.hoje.slice(0, 4) + '-12-31';
+    consultar();
+  }, 'gps-territorio-estado');
+
+  rpc('gpsMinhasOpcoes', [], dados => {
+    el('gps-revisar').hidden = dados.papel !== 'CEC';
+    el('gps-atuacao').hidden = !dados.escolas.length;
+    preencher(plano.elements.escola_id, dados.escolas, 'Selecione');
+    preencher(plano.elements.pasta_id, dados.pastas, 'Selecione');
+    preencher(plano.elements.componente_id, dados.componentes, 'Selecione');
+    preencher(termo.elements.visita_id, dados.visitas, 'Selecione');
+    const atualizarTurmas = () => preencher(plano.elements.turma_id,
+      dados.turmas.filter(r => r.escola_id === plano.elements.escola_id.value), 'Sem turma');
+    atualizarTurmas();
+    plano.elements.escola_id.addEventListener('change', atualizarTurmas);
+  });
+  el('gps-verificar').addEventListener('click', () => rpc('gpsAvisosFormulario', [formData(plano)], avisos => {
+    el('gps-plano-estado').textContent = `${avisos.alinhadas} de ${avisos.prioridades} prioridades da escola contempladas.`;
+  }, 'gps-plano-estado'));
+  termo.elements.visita_id.addEventListener('change', () => {
+    if (!termo.elements.visita_id.value) return;
+    rpc('gpsContextoTermo', [termo.elements.visita_id.value], avisos => {
+      el('gps-termo-estado').textContent = `${avisos.divergencias} prioridades da escola fora do escopo desta visita.`;
+    }, 'gps-termo-estado');
+  });
+  for (const [form, metodo, estado] of [[plano, 'gpsSalvarPlano', 'gps-plano-estado'], [termo, 'gpsSalvarTermo', 'gps-termo-estado']]) {
+    form.addEventListener('submit', evt => {
+      evt.preventDefault();
+      rpc(metodo, [formData(form)], () => { el(estado).textContent = 'Registro salvo.'; }, estado);
+    });
+  }
+  function alertas(abrir) {
+    rpc('gpsMeusAlertas', [], itens => {
+      preencher(justificativa.elements.id, itens.map(r => ({ id: r.id, nome: r.tipo.replaceAll('_', ' ') + ' · ' + r.periodo })), 'Selecione');
+      el('gps-abrir-alertas').hidden = !itens.length;
+      if (itens.length && abrir && !dialogo.open) dialogo.showModal();
+      if (!itens.length && dialogo.open) dialogo.close();
+    });
+  }
+  el('gps-abrir-alertas').addEventListener('click', () => alertas(true));
+  el('gps-fechar-alertas').addEventListener('click', () => dialogo.close());
+  justificativa.addEventListener('submit', evt => {
+    evt.preventDefault();
+    rpc('gpsJustificarAlerta', [formData(justificativa)], () => {
+      justificativa.reset();
+      el('gps-alerta-estado').textContent = 'Justificativa registrada.';
+      alertas(false);
+    }, 'gps-alerta-estado');
+  });
+  el('gps-form-revisar').addEventListener('submit', evt => {
+    evt.preventDefault();
+    const dados = formData(evt.currentTarget);
+    rpc('gpsRevisarIndicador', [{ id: dados.id, valor: dados.valor === '' ? null : Number(dados.valor) }], () => {
+      el('gps-revisao-estado').textContent = 'Indicador validado.';
+    }, 'gps-revisao-estado');
+  });
+  alertas(!sessionStorage.getItem('gps-alertas-abertos'));
+  dialogo.addEventListener('close', () => sessionStorage.setItem('gps-alertas-abertos', 'true'));
+})();
+</script>

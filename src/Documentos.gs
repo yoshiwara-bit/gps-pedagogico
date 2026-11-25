@@ -153,7 +153,7 @@ function gpsLerGrade_(aba) {
 // A origem deve pertencer ao laboratório. O serviço avançado usa o projeto padrão do Apps Script.
 function gpsOCRBlob_(blob, pastaId) {
   const temporario = Drive.Files.create(
-    { name: 'GPS LAB OCR temporário', mimeType: 'application/vnd.google-apps.document', parents: [pastaId] },
+    { name: 'GPS LAB OCR temporário', mimeType: 'application/vnd.google-apps.document', parents: [pastaId], appProperties: { gpsTemporario: 'true' } },
     blob, { fields: 'id', ocrLanguage: 'pt' }
   );
   try {
@@ -184,7 +184,7 @@ function gpsLerArquivoLaboratorio_(arquivoId) {
   })[mime];
   if (!destino) throw new Error('Formato documental não suportado');
   const temporario = Drive.Files.create(
-    { name: 'GPS LAB temporário', mimeType: destino, parents: [pastaId] }, arquivo.getBlob(),
+    { name: 'GPS LAB temporário', mimeType: destino, parents: [pastaId], appProperties: { gpsTemporario: 'true' } }, arquivo.getBlob(),
     { fields: 'id', ...(destino === docs ? { ocrLanguage: 'pt' } : {}) }
   );
   try {
@@ -206,6 +206,9 @@ function gpsLerArquivoLaboratorio_(arquivoId) {
         imagens.push({ ordem: null, texto: '', revisar: true,
           motivo: /imageId/i.test(String(erro.message)) ? 'image_id_invalido' : 'imagens_indisponiveis' });
       }
+    }
+    if (classificacao.tipo === 'saeb' && typeof Drive.Files.export === 'function') {
+      imagens = gpsRecuperarImagensExportadas_(temporario.id, imagens, pastaId);
     }
     return { texto, classificacao, grades, requerRevisao: mime === 'application/pdf' || classificacao.revisar, imagens };
   } finally {

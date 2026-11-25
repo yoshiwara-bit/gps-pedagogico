@@ -1,24 +1,26 @@
 const GPS_SCHEMA = {
-  municipios: ['nome'], escolas: ['municipio_id', 'codigo', 'nome'],
+  municipios: ['nome'], escolas: ['municipio_id', 'codigo', 'nome', 'latitude', 'longitude'],
   pecs: ['nome'], pastas: ['nome'], anos_letivos: ['ano'],
   atribuicoes: ['pec_id', 'pasta_id', 'escola_id', 'ano_letivo_id'],
   turmas: ['escola_id', 'ano_letivo_id', 'serie', 'codigo'],
-  componentes: ['nome'], planos: ['pec_id', 'documento_id', 'periodo'],
-  visitas: ['plano_id', 'pec_id', 'escola_id', 'turma_id', 'componente_id', 'data', 'status'],
-  apoios: ['plano_id', 'pec_id', 'escola_id', 'turma_id', 'componente_id', 'data', 'status'],
+  componentes: ['nome'], planos: ['pec_id', 'documento_id', 'periodo', 'objetivo'],
+  visitas: ['plano_id', 'pec_id', 'escola_id', 'turma_id', 'componente_id', 'data', 'status', 'horario', 'pasta_id'],
+  apoios: ['plano_id', 'pec_id', 'escola_id', 'turma_id', 'componente_id', 'data', 'status', 'horario', 'pasta_id'],
   documentos: ['chave', 'tipo', 'versao', 'origem'],
-  comprovantes: ['visita_id', 'documento_id', 'tipo'],
+  comprovantes: ['visita_id', 'documento_id', 'tipo', 'validado', 'observacao'],
   indicadores: ['escola_id', 'municipio_id', 'turma_id', 'componente_id', 'ano', 'serie', 'fonte', 'periodo', 'metrica', 'escala', 'nivel', 'valor_original', 'valor', 'revisar', 'documento_id'],
   metas: ['pasta_id', 'atividade', 'periodicidade', 'quantidade', 'por_escola', 'obrigatoria'],
-  prioridades: ['escola_id', 'turma_id', 'componente_id', 'ano', 'serie', 'criterio_versao', 'indicador_id', 'referencias_historicas'],
-  alertas: ['prioridade_id', 'visita_id', 'tipo', 'status', 'criticidade', 'destinatario_id', 'periodo', 'alvo_id', 'ultima_notificacao', 'ocorrencias'],
-  justificativas: ['visita_id', 'motivo', 'status'],
+  prioridades: ['escola_id', 'turma_id', 'componente_id', 'ano', 'serie', 'criterio_versao', 'indicador_id', 'referencias_historicas', 'referencias_escola', 'diagnostico'],
+  alertas: ['prioridade_id', 'visita_id', 'tipo', 'status', 'criticidade', 'destinatario_id', 'periodo', 'alvo_id', 'ultima_notificacao', 'ocorrencias', 'envio'],
+  justificativas: ['visita_id', 'motivo', 'status', 'alerta_id', 'pec_id'],
   encaminhamentos: ['alerta_id', 'acao', 'prazo', 'status'],
   revisoes: ['documento_id', 'motivo', 'status'],
   usuarios: ['email', 'perfil', 'pec_id', 'ativo'],
-  fila: ['documento_id', 'origem', 'status', 'tentativas'],
+  fila: ['documento_id', 'origem', 'status', 'tentativas', 'versao'],
   criterios: ['fonte', 'metrica', 'escala', 'nivel', 'direcao', 'limite', 'versao', 'aprovado_cec'],
-  auditoria: ['entidade', 'registro_id', 'operacao', 'instante']
+  fontes_importacao: ['origem', 'fonte', 'escala', 'metrica', 'unidade', 'periodo'],
+  termos_web: ['visita_id', 'pec_id', 'tipo', 'observacao'],
+  auditoria: ['entidade', 'registro_id', 'operacao', 'instante', 'ator_id']
 };
 
 const GPS_RELACOES = {
@@ -75,15 +77,19 @@ function gpsCriarEstrutura_(planilha) {
     if (!aba || !aba.getLastRow()) continue;
     const esperados = ['id', ...campos];
     const atuais = aba.getRange(1, 1, 1, esperados.length).getValues()[0];
-    if (atuais.some((campo, i) => campo !== esperados[i]) || aba.getLastColumn() !== esperados.length) {
+    if (aba.getLastColumn() > esperados.length ||
+        atuais.some((campo, i) => i < aba.getLastColumn() && campo !== esperados[i])) {
       throw new Error('Cabeçalho incompatível: ' + nome);
     }
   }
   for (const [nome, campos] of Object.entries(GPS_SCHEMA)) {
     const aba = planilha.getSheetByName(nome) || planilha.insertSheet(nome);
-    if (aba.getLastRow()) continue;
+    const existentes = aba.getLastRow() ? aba.getLastColumn() : 0;
     const cabecalho = ['id', ...campos];
-    aba.getRange(1, 1, 1, cabecalho.length).setValues([cabecalho]);
+    if (existentes < cabecalho.length) {
+      const adicionais = cabecalho.slice(existentes);
+      aba.getRange(1, existentes + 1, 1, adicionais.length).setValues([adicionais]);
+    }
     aba.setFrozenRows(1);
   }
 }

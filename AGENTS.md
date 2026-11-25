@@ -27,3 +27,11 @@ Etapas 13–18 (base, cruzamento/metas, alertas, sincronização, desempenho con
 - Separe previsão, contabilização pelo planejamento e comprovação. Ficha e termo podem comprovar uma única visita. Ausência de um deles gera pendência. Recomendações não geram cobrança obrigatória.
 - Teste com planilha, pasta e documentos sintéticos. Use script properties para os IDs privados. Revise permissão por perfil antes de liberar qualquer dado. Testes devem usar notificações simuladas, sem e-mails reais.
 - Execute `node --test tests/*.test.cjs` e atualize `RELATORIO_DESENVOLVIMENTO.md` com evidências e limites da validação.
+
+## Etapa 2
+
+- Consulte `RELATORIO_DESENVOLVIMENTO_ETAPA_2.md` junto ao relatório anterior. Mantenha `main`, produção e `GPS_LAB.gs` preservados.
+- Trate os dados históricos da escola como contexto diagnóstico por série e componente. Separe histórico escolar, contexto regional e resultado atual de turma.
+- Valide a migração de cabeçalhos em laboratório. Mantenha as propriedades de IDs privadas. Use somente a pasta isolada, com arquivos sintéticos, para ensaiar sincronização e OCR.
+- Mantenha `GPS_LAB_AUTOMACAO` e `GPS_LAB_EMAIL` desativadas por padrão. Em testes use um emissor falso. Confira manualmente estados de envio reservado antes de qualquer reenvio.
+- A interface deve confirmar identidade e escopo no servidor antes de retornar dados ou gravar. Cache não substitui autorização. Use testes sintéticos para toda mudança de perfil ou deduplicação.

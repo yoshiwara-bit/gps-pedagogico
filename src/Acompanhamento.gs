@@ -88,10 +88,15 @@ function gpsAvaliarMeta_(regra, atividades, pec_id, periodo, escola_id) {
 }
 
 function gpsMonitorarPrioridades_(prioridades, atividades) {
+  const porEscola = new Map();
+  for (const atividade of atividades) {
+    if (atividade.status === 'cancelada') continue;
+    const chave = gpsChave_(atividade.escola_id, atividade.data.slice(0, 4));
+    if (!porEscola.has(chave)) porEscola.set(chave, []);
+    porEscola.get(chave).push(atividade);
+  }
   return prioridades.map(prioridade => {
-    const candidatas = atividades.filter(item => item.status !== 'cancelada' &&
-      item.escola_id === prioridade.escola_id &&
-      item.data.slice(0, 4) === String(prioridade.ano));
+    const candidatas = porEscola.get(gpsChave_(prioridade.escola_id, String(prioridade.ano))) || [];
     const alinhadas = candidatas.filter(item =>
       (!prioridade.turma_id || item.turma_id === prioridade.turma_id) &&
       (!prioridade.componente_id || item.componente_id === prioridade.componente_id));

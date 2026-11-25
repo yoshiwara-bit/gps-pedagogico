@@ -29,6 +29,8 @@
     <option value="municipios">Municípios</option>
     <option value="pecs">PECs</option>
     <option value="prioridades">Prioridades</option>
+    <option value="indicadores">Indicadores</option>
+    <option value="revisoes">Revisões documentais</option>
     <option value="metas">Metas</option>
     <option value="visitas">Visitas</option>
     <option value="apoios">Apoios</option>
@@ -37,6 +39,15 @@
   <p id="estado" role="status"></p>
   <div class="tabela" hidden><table><thead></thead><tbody></tbody></table></div>
   <button id="mais" type="button" hidden>Carregar próxima página</button>
+  <details id="gps-revisar" hidden><summary>Validar indicador (CEC)</summary>
+    <form id="gps-form-revisar" class="gps-grade">
+      <label>ID do indicador<input name="id" required></label>
+      <label>Valor conferido (vazio para ausência)<input type="number" step="any" name="valor"></label>
+      <button>Validar indicador</button>
+    </form>
+    <p id="gps-revisao-estado" role="status"></p>
+  </details>
+  <?!= gpsIncluir_('Atuacao'); ?>
 </main>
 <script>
   const secao = document.querySelector('#secao');

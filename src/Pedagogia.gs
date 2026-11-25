@@ -12,7 +12,8 @@ function gpsProjetarCoorte_(indicador, ano) {
   return {
     anoAplicacao: aplicacao, serieAplicacao: serie, anoAcompanhamento: ano,
     serieAcompanhamento: destino || null,
-    situacao: destino ? 'referencia_regional_sem_vinculo_individual' : 'conclusao_prevista'
+    situacao: destino ? 'referencia_sem_vinculo_individual' : 'conclusao_prevista',
+    escolaOrigem: indicador.escola_id || null
   };
 }
 
@@ -27,28 +28,43 @@ function gpsSelecionarPrioridades_(indicadores, politica, ano) {
     const regra = politica.regras.find(item => item.fonte === indicador.fonte &&
       item.escala === indicador.escala && item.metrica === indicador.metrica &&
       (item.nivel ?? '') === (indicador.nivel ?? ''));
-    if (!regra || !Number.isFinite(regra.limite) ||
-        !((regra.direcao === 'abaixo' && indicador.valor < regra.limite) ||
-          (regra.direcao === 'acima' && indicador.valor > regra.limite))) continue;
+    if (!regra || !Number.isFinite(regra.limite) || !['abaixo', 'acima'].includes(regra.direcao)) continue;
+    const fragilidade = regra.direcao === 'abaixo' ? indicador.valor < regra.limite : indicador.valor > regra.limite;
     const historico = indicador.ano !== ano;
     const coorte = historico ? gpsProjetarCoorte_(indicador, ano) : null;
     if (historico && !coorte?.serieAcompanhamento) continue;
-    resultados.push({ indicador, coorte });
+    resultados.push({ indicador, coorte, fragilidade });
   }
   const referencias = new Map();
-  for (const { indicador, coorte } of resultados) {
+  const locais = new Map();
+  for (const item of resultados) {
+    const { indicador, coorte, fragilidade } = item;
     if (!coorte || !indicador.componente_id) continue;
-    const chave = gpsChave_(coorte.serieAcompanhamento, indicador.componente_id);
-    const itens = referencias.get(chave) || [];
-    itens.push(indicador.id);
-    referencias.set(chave, itens);
+    const regional = gpsChave_(coorte.serieAcompanhamento, indicador.componente_id);
+    const local = gpsChave_(regional, indicador.escola_id);
+    if (fragilidade) {
+      if (!referencias.has(regional)) referencias.set(regional, []);
+      referencias.get(regional).push(indicador.id);
+    }
+    if (indicador.escola_id) {
+      if (!locais.has(local)) locais.set(local, []);
+      locais.get(local).push(item);
+    }
   }
-  return resultados.filter(item => !item.coorte).map(({ indicador }) => ({
-    id: gpsChave_(politica.versao, indicador.id, ano),
-    escola_id: indicador.escola_id, turma_id: indicador.turma_id,
-    componente_id: indicador.componente_id, serie: indicador.serie, ano,
-    fonte: indicador.fonte, indicador_id: indicador.id, criterio_versao: politica.versao,
-    referencias_historicas: indicador.fonte === 'prova_paulista' && indicador.componente_id
-      ? referencias.get(gpsChave_(indicador.serie, indicador.componente_id)) || [] : []
-  }));
+  const prioridades = resultados.filter(item => !item.coorte && item.fragilidade).map(({ indicador }) => {
+    const regional = gpsChave_(indicador.serie, indicador.componente_id);
+    const referenciasLocais = locais.get(gpsChave_(regional, indicador.escola_id)) || [];
+    const fragilidadesLocais = referenciasLocais.filter(item => item.fragilidade);
+    return {
+      id: gpsChave_(politica.versao, indicador.id, ano),
+      escola_id: indicador.escola_id, turma_id: indicador.turma_id,
+      componente_id: indicador.componente_id, serie: indicador.serie, ano,
+      fonte: indicador.fonte, indicador_id: indicador.id, criterio_versao: politica.versao,
+      referencias_historicas: indicador.fonte === 'prova_paulista' ? referencias.get(regional) || [] : [],
+      referencias_escola: referenciasLocais.map(item => item.indicador.id),
+      diagnostico: fragilidadesLocais.length ? 'persistente' :
+        referenciasLocais.length ? 'emergente' : 'sem_historico_escolar'
+    };
+  });
+  return prioridades;
 }
