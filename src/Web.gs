@@ -131,7 +131,8 @@ function gpsFarolIndicador_(registro, regras) {
   if (!valor) return { texto: 'Sem dado', cor: 'cinza' };
   const nivel = String(registro.nivel ?? '').trim();
   const niveisPP = ['Abaixo do Básico', 'Básico', 'Adequado', 'Avançado'];
-  const nivelAceito = nivel && (registro.fonte !== 'prova_paulista' || niveisPP.includes(nivel));
+  const nivelAceito = nivel && (registro.fonte !== 'prova_paulista' || niveisPP.includes(nivel)) &&
+    (registro.fonte !== 'avd' || GPS_NIVEIS_AVD.includes(nivel));
   const correspondencias = nivelAceito ? regras.filter(r => r.homologado === true && r.referencia &&
     r.fonte === registro.fonte && String(r.ano) === String(registro.ano) && r.escala === registro.escala &&
     r.metrica === registro.metrica && r.nivel === nivel && ['vermelho', 'amarelo', 'verde', 'azul'].includes(r.cor)) : [];
@@ -162,6 +163,7 @@ function gpsNomesPainel_(base, tabela) {
 
 function gpsValorPainel_(registro, campo, nomes) {
   const valor = registro[campo] ?? '';
+  if (campo === 'escola_id' && valor && nomes[campo]?.has(String(valor))) return { texto: nomes[campo].get(String(valor)), escola_id: valor };
   if (nomes[campo]) return valor ? nomes[campo].get(String(valor)) || 'Cadastro indisponível' : '—';
   const rotulos = { saresp: 'SARESP', saeb: 'SAEB', prova_paulista: 'Prova Paulista', avd: 'Avaliação Diagnóstica',
     frequencia: 'Frequência', participacao: 'Participação', proficiencia: 'Proficiência', percentual_nivel: 'Percentual no nível',

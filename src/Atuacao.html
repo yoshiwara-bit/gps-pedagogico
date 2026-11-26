@@ -9,7 +9,7 @@
   #gps-previa { position: absolute; inset-inline-end: .5rem; inset-block-end: .5rem; max-width: calc(100% - 1rem);
     padding: .55rem .75rem; border: 1px solid var(--borda); border-radius: .45rem; background: white;
     box-shadow: 0 2px 8px #083d4326; pointer-events: none; }
-  #gps-previa-atividade { display: block; font-size: .875rem; }
+  #gps-previa-atividade, #gps-previa-contexto { display: block; font-size: .875rem; }
   #gps-mapa circle { cursor: pointer; }
   #gps-calor { max-height: 22rem; overflow: auto; }
   .gps-barra { height: .4rem; width: 9rem; }
@@ -25,22 +25,29 @@
     <label>De<input name="inicio" type="date" required></label>
     <label>Até<input name="fim" type="date" required></label>
     <label>Atividade<select name="tipo"><option value="">Todas</option><option value="visita">Visitas</option><option value="apoio">Apoios</option></select></label>
+    <label>Camada<select name="camada"><option value="atividades">Acompanhamentos</option><option value="visitas">Visitas</option><option value="apoios">Apoios</option><option value="calor">Mapa de calor</option><option value="frequencia">Cobertura de frequência</option><option value="avaliacoes">Cobertura de avaliações</option><option value="plataformas">Cobertura de plataformas</option><option value="prioridades">Prioridades</option></select></label>
     <label>Agrupamento<select name="granularidade"><option value="semanal">Semana</option><option value="quinzenal">Quinzena</option><option value="mensal" selected>Mês</option><option value="ano">Ano</option></select></label>
     <button>Aplicar filtros</button>
   </form>
   <p id="gps-territorio-estado" role="status"></p>
-  <p>Mapa esquemático. As posições ilustram a distribuição e não representam limites geográficos.</p>
+  <p id="gps-mapa-modo">Carregando cartografia…</p>
+  <p id="gps-mapa-legenda"></p>
+  <button type="button" id="gps-zoom-mais" hidden>Aproximar</button>
+  <button type="button" id="gps-zoom-menos" hidden>Afastar</button>
+  <button type="button" id="gps-zoom-restaurar" hidden>Ver território inteiro</button>
   <div class="gps-mapa-area">
     <svg id="gps-mapa" viewBox="0 0 600 320" aria-label="Mapa esquemático sem limites geográficos"></svg>
     <div id="gps-previa" role="tooltip" hidden>
       <strong id="gps-previa-nome"></strong>
       <span id="gps-previa-atividade"></span>
+      <span id="gps-previa-contexto"></span>
     </div>
   </div>
   <p id="gps-mapa-estado" role="status"></p>
   <aside id="gps-ficha" class="gps-bloco" hidden>
     <h3 id="gps-ficha-nome"></h3>
     <p id="gps-ficha-atividade"></p>
+    <button id="gps-ficha-integral" type="button">Abrir ficha integral</button>
   </aside>
   <div class="tabela"><table aria-label="Gráfico por período"><tbody id="gps-grafico"></tbody></table></div>
   <details><summary>Mapa de calor temporal por escola</summary>
@@ -50,14 +57,14 @@
 <section data-pagina="registros" hidden>
 <div class="gps-bloco" id="gps-atuacao" hidden>
   <h2>Registrar atuação</h2>
-  <details><summary>Plano de Trabalho</summary>
+  <details data-formulario="plano"><summary>Plano de Trabalho</summary>
     <form id="gps-plano" class="gps-grade">
       <label>Escola<select name="escola_id" required></select></label>
       <label>Pasta<select name="pasta_id" required></select></label>
       <label>Componente<select name="componente_id" required></select></label>
       <label>Turma<select name="turma_id"></select></label>
       <label>Data<input name="data" type="date" required></label>
-      <label>Horário<input name="horario" type="time"></label>
+      <label>Período informado<select name="periodo_dia"><option value="">Sem período</option><option>manhã</option><option>tarde</option></select></label>
       <label>Atividade<select name="tipo"><option value="visita">Visita</option><option value="apoio">Apoio presencial</option></select></label>
       <label>Objetivo pedagógico<textarea name="objetivo" maxlength="1000" required></textarea></label>
       <button type="button" id="gps-verificar">Verificar prioridades</button>
@@ -65,7 +72,7 @@
     </form>
     <p id="gps-plano-estado" role="status"></p>
   </details>
-  <details><summary>Justificar visita com termo pendente</summary>
+  <details data-formulario="decisao"><summary>Justificar visita com termo pendente</summary>
     <form id="gps-decisao" class="gps-grade">
       <label>Visita<select name="visita_id" required></select></label>
       <label>Motivo se a visita não ocorreu<textarea name="motivo" maxlength="1000"></textarea></label>
@@ -74,7 +81,7 @@
     </form>
     <p id="gps-decisao-estado" role="status"></p>
   </details>
-  <details><summary>Termo ou ficha de visita</summary>
+  <details data-formulario="termo"><summary>Termo ou ficha de visita</summary>
     <form id="gps-termo" class="gps-grade">
       <label>Visita<select name="visita_id" required></select></label>
       <label>Tipo<select name="tipo"><option value="termo_visita">Termo</option><option value="ficha_visita">Ficha</option></select></label>
@@ -114,6 +121,37 @@
   const dialogo = el('gps-alertas');
   let numeroConsulta = 0;
   let resumoInicial = true;
+  let cartografia;
+  let ultimosDados;
+  let zoom = 1;
+  const previas = new Map();
+  const coresMunicipais = ['#087b73','#418653','#9054a4','#477cb0','#bd586f','#b56c35'];
+  const nsMapa = 'http://www.w3.org/2000/svg';
+  const normalizarMapa = t => String(t || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
+  function svgMapa(tipo, atributos) {
+    const item = document.createElementNS(nsMapa, tipo);
+    for (const [chave, valor] of Object.entries(atributos)) item.setAttribute(chave, valor);
+    return item;
+  }
+  function ajustarZoom() {
+    const largura = 600 / zoom;
+    const altura = 320 / zoom;
+    el('gps-mapa').setAttribute('viewBox', [(600 - largura) / 2, (320 - altura) / 2, largura, altura].join(' '));
+  }
+  for (const [id, fator] of [['gps-zoom-mais', 1.4], ['gps-zoom-menos', 1/1.4], ['gps-zoom-restaurar', 0]]) {
+    el(id).addEventListener('click', () => {
+      zoom = fator ? Math.min(6, Math.max(1, zoom * fator)) : 1;
+      ajustarZoom();
+    });
+  }
+  document.addEventListener('gps:modulo', ({detail}) => {
+    if (detail.alvo !== 'territorio' || cartografia) return;
+    cartografia = { modo: 'pendente', motivo: 'Consultando cartografia…' };
+    rpc('gpsCartografia', [], dados => {
+      cartografia = dados;
+      if (ultimosDados) renderizar(ultimosDados);
+    }, 'gps-mapa-modo');
+  });
   function rpc(nome, argumentos, sucesso, estado) {
     google.script.run.withSuccessHandler(sucesso).withFailureHandler(erro => {
       if (estado) el(estado).textContent = erro.message || 'Operação indisponível.';
@@ -132,6 +170,7 @@
   }
 
   function renderizar(dados) {
+    ultimosDados = dados;
     const { resumo, pontos, periodos, calor } = dados;
     if (resumoInicial) {
       el('gps-total-escolas').textContent = pontos.length;
@@ -145,31 +184,68 @@
     if (ficha) {
       el('gps-ficha-nome').textContent = ficha.nome;
       el('gps-ficha-atividade').textContent = textoAtividades(ficha);
+      el('gps-ficha-integral').onclick = () => window.gpsAbrirFicha(ficha.id, ficha.nome);
     }
     const mapa = el('gps-mapa');
     mapa.replaceChildren();
     const previa = el('gps-previa');
     previa.hidden = true;
     let pontoComPrevia;
-    const locais = pontos.filter(p => Number.isFinite(p.latitude) && Number.isFinite(p.longitude));
-    el('gps-mapa-estado').textContent = `${locais.length} de ${pontos.length} escolas com coordenadas`;
-    const escala = (valor, conjunto, tamanho) => {
-      const menor = Math.min(...conjunto);
-      const maior = Math.max(...conjunto);
-      return menor === maior ? tamanho / 2 : 20 + (valor - menor) * (tamanho - 40) / (maior - menor);
-    };
-    const maximo = Math.max(1, ...pontos.map(r => r.contabilizadas));
+    let temporizadorPrevia;
+    const geografico = cartografia?.modo === 'geografico';
+    const esquematico = cartografia?.modo === 'esquematico';
+    const locais = geografico || esquematico
+      ? pontos.filter(p => Number.isFinite(p.latitude) && Number.isFinite(p.longitude)) : [];
+    el('gps-mapa-modo').textContent = geografico ? 'Divisas: ' + cartografia.fonte +
+      (cartografia.sede ? '' : ' · Sede da URE aguarda coordenadas verificadas.') :
+      cartografia?.motivo || 'Carregando cartografia…';
+    mapa.setAttribute('aria-label', geografico ? 'Mapa territorial com divisas municipais' : 'Mapa esquemático sem limites geográficos');
+    el('gps-mapa-estado').textContent = locais.length + ' de ' + pontos.length + ' escolas exibidas no mapa';
+    const divisas = geografico ? cartografia.divisas : [];
+    const coordenadas = divisas.flatMap(d => d.poligonos.flat(2));
+    for (const p of locais) coordenadas.push([p.longitude, p.latitude]);
+    if (geografico && cartografia.sede) coordenadas.push([cartografia.sede[1], cartografia.sede[0]]);
+    let o = Infinity, l = -Infinity, s = Infinity, n = -Infinity;
+    for (const [lon, lat] of coordenadas) {
+      o = Math.min(o, lon); l = Math.max(l, lon); s = Math.min(s, lat); n = Math.max(n, lat);
+    }
+    const cos = geografico ? Math.cos((n + s) / 2 * Math.PI / 180) : 1;
+    const escala = Math.min(560 / Math.max((l - o) * cos, .0001), 280 / Math.max(n - s, .0001));
+    const xy = ([lon, lat]) => [300 + (lon - (o + l) / 2) * cos * escala, 160 - (lat - (n + s) / 2) * escala];
+    for (const d of divisas) {
+      const path = d.poligonos.flatMap(p => p.map(anel => 'M' + anel.map(pos => xy(pos).join(',')).join('L') + 'Z')).join('');
+      const area = svgMapa('path', { d:path, fill:coresMunicipais[d.cor], stroke:coresMunicipais[d.cor],
+        'fill-opacity':.18, 'fill-rule':'evenodd', 'stroke-width':1.2 });
+      const titulo = svgMapa('title', {}); titulo.textContent = d.nome; area.append(titulo); mapa.append(area);
+    }
+    const legendaDivisas = divisas.map(d => d.nome).join(' · ');
+    el('gps-mapa-legenda').textContent = legendaDivisas;
+    if (geografico && cartografia.sede) {
+      const [x,y] = xy([cartografia.sede[1], cartografia.sede[0]]);
+      const sede = svgMapa('rect', { x:x-6,y:y-6,width:12,height:12,fill:'#f4c649',stroke:'#083d43',transform:'rotate(45 '+x+' '+y+')' });
+      const titulo = svgMapa('title', {}); titulo.textContent = 'Sede da URE'; sede.append(titulo); mapa.append(sede);
+    }
+    for (const id of ['gps-zoom-mais','gps-zoom-menos','gps-zoom-restaurar']) el(id).hidden = !geografico;
+    ajustarZoom();
+    const camada = dados.camada || 'atividades';
+    const intensidade = p => ['atividades','calor'].includes(camada) ? p.contabilizadas :
+      ['visitas','apoios'].includes(camada) ? p[camada] || 0 : p.cobertura || 0;
+    const maximo = Math.max(1, ...locais.map(intensidade));
     for (const p of locais) {
-      const ponto = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
-      ponto.setAttribute('cx', escala(p.longitude, locais.map(r => r.longitude), 600));
-      ponto.setAttribute('cy', 320 - escala(p.latitude, locais.map(r => r.latitude), 320));
-      ponto.setAttribute('r', 5 + 10 * p.contabilizadas / maximo);
-      ponto.setAttribute('fill', p.contabilizadas ? '#087b73' : '#526a76');
+      const [x,y] = xy([p.longitude, p.latitude]);
+      const valor = intensidade(p);
+      if (camada === 'calor' && valor) mapa.append(svgMapa('circle', {
+        cx:x,cy:y,r:10+22*valor/maximo,fill:'#e5792b',opacity:.2,'pointer-events':'none'
+      }));
+      const cor = divisas.find(d => d.chave === normalizarMapa(p.municipio))?.cor;
+      const ponto = svgMapa('circle', { cx:x, cy:y, r:5+9*valor/maximo,
+        fill: valor ? (coresMunicipais[cor] || '#087b73') : '#526a76', stroke:'#fff','stroke-width':1 });
       ponto.setAttribute('tabindex', '0');
       ponto.setAttribute('role', 'button');
       ponto.setAttribute('aria-label', p.nome);
       const ocultarPrevia = () => {
         if (pontoComPrevia !== ponto) return;
+        clearTimeout(temporizadorPrevia);
         previa.hidden = true;
         ponto.removeAttribute('aria-describedby');
         pontoComPrevia = null;
@@ -177,8 +253,34 @@
       const abrirPrevia = () => {
         pontoComPrevia?.removeAttribute('aria-describedby');
         pontoComPrevia = ponto;
+        clearTimeout(temporizadorPrevia);
+        const contexto = el('gps-previa-contexto');
+        contexto.textContent = '';
+        const inicio = filtros.elements.inicio.value;
+        const fim = filtros.elements.fim.value;
+        const chave = JSON.stringify([p.id, inicio, fim]);
+        const mostrar = resumo => {
+          if (pontoComPrevia !== ponto || !ponto.isConnected) return;
+          const r = resumo.visita;
+          const trechos = [];
+          if (r) trechos.push('Visita: ' + [r.data, r.situacao, r.termo].filter(Boolean).join(' · '));
+          if (resumo.frequencia) trechos.push('Frequência: ' + resumo.frequencia);
+          if (resumo.provaPaulista) trechos.push('Prova Paulista: ' + resumo.provaPaulista);
+          if (resumo.saresp) trechos.push('SARESP: ' + resumo.saresp.texto);
+          contexto.textContent = trechos.join(' | ');
+        };
+        if (previas.has(chave)) mostrar(previas.get(chave));
+        else temporizadorPrevia = setTimeout(() => {
+          if (!ponto.isConnected) return;
+          rpc('gpsResumoMapaEscola', [p.id,inicio,fim], resumo => {
+            if (previas.size >= 120) previas.clear();
+            previas.set(chave, resumo);
+            mostrar(resumo);
+          });
+        }, 300);
         el('gps-previa-nome').textContent = p.nome;
-        el('gps-previa-atividade').textContent = textoAtividades(p);
+        el('gps-previa-atividade').textContent = textoAtividades(p) +
+          (p.cobertura != null ? ' · ' + p.cobertura + ' registros na camada' : '');
         previa.hidden = false;
         ponto.setAttribute('aria-describedby', 'gps-previa');
       };
@@ -190,6 +292,7 @@
         ocultarPrevia();
         filtros.elements.escola_id.value = p.id;
         consultar();
+        window.gpsAbrirFicha(p.id, p.nome);
       };
       ponto.addEventListener('click', selecionar);
       ponto.addEventListener('keydown', evento => {
@@ -220,10 +323,10 @@
     heat.replaceChildren();
     linha(heat, ['Escola', 'Período', 'Previstas', 'Contabilizadas', 'Comprovadas']);
     const nomes = new Map(pontos.map(r => [r.id, r.nome]));
-    const intensidade = Math.max(1, ...calor.map(r => r.contabilizadas));
+    const maximoCalor = Math.max(1, ...calor.map(r => r.contabilizadas));
     for (const p of calor) {
       const tr = linha(heat, [nomes.get(p.escola_id), p.periodo, p.previstas, p.contabilizadas, p.comprovadas]);
-      tr.cells[3].style.backgroundColor = `rgba(8, 123, 115, ${.65 * p.contabilizadas / intensidade})`;
+      tr.cells[3].style.backgroundColor = `rgba(8, 123, 115, ${.65 * p.contabilizadas / maximoCalor})`;
     }
   }
   function consultar() {
@@ -234,6 +337,9 @@
   rpc('gpsOpcoesTerritorio', [], dados => {
     for (const [campo, itens] of Object.entries({ escola_id: dados.escolas, municipio_id: dados.municipios, pec_id: dados.pecs, pasta_id: dados.pastas })) {
       preencher(filtros.elements[campo], itens, 'Todos');
+    }
+    if (!dados.camadasPedagogicas) {
+      for (const valor of ['frequencia','avaliacoes','plataformas','prioridades']) filtros.elements.camada.querySelector('[value='+valor+']').hidden = true;
     }
     filtros.elements.inicio.value = dados.hoje.slice(0, 4) + '-01-01';
     filtros.elements.fim.value = dados.hoje.slice(0, 4) + '-12-31';
@@ -289,12 +395,6 @@
       if (!itens.length && dialogo.open) dialogo.close();
     }, 'gps-central-estado');
   }
-  el('gps-alertas-gerais').addEventListener('click', () => {
-    const consulta = document.querySelector('#secao');
-    consulta.value = 'alertas';
-    document.querySelector('[data-abrir=consultas]').click();
-    consulta.dispatchEvent(new Event('change'));
-  });
   el('gps-abrir-alertas').addEventListener('click', () => alertas(true));
   el('gps-fechar-alertas').addEventListener('click', () => dialogo.close());
   justificativa.addEventListener('submit', evt => {

@@ -13,7 +13,7 @@ function gpsAgregarTerritorio_(escolas, atividades, filtro) {
   const pontos = new Map(apenasEscolas.map(r => {
     const latitude = r.latitude === '' || r.latitude == null ? null : Number(r.latitude);
     const longitude = r.longitude === '' || r.longitude == null ? null : Number(r.longitude);
-    return [r.id, { id: r.id, nome: r.nome, latitude: Math.abs(latitude) <= 90 ? latitude : null,
+    return [r.id, { id: r.id, nome: r.nome, municipio_id: r.municipio_id, visitas: 0, apoios: 0, latitude: Math.abs(latitude) <= 90 ? latitude : null,
       longitude: Math.abs(longitude) <= 180 ? longitude : null, previstas: 0, contabilizadas: 0, comprovadas: 0 }];
   }));
   const resumo = { previstas: 0, contabilizadas: 0, comprovadas: 0 };
@@ -23,6 +23,10 @@ function gpsAgregarTerritorio_(escolas, atividades, filtro) {
     if (!pontos.has(r.escola_id) || r.status === 'cancelada' || r.data < filtro.inicio || r.data > filtro.fim ||
         (filtro.pec_id && r.pec_id !== filtro.pec_id) || (filtro.pasta_id && r.pasta_id !== filtro.pasta_id) ||
         (filtro.tipo && r.tipo !== filtro.tipo)) continue;
+    if (r.contabilizada) {
+      if (r.tipo === 'visita') pontos.get(r.escola_id).visitas++;
+      if (r.tipo === 'apoio') pontos.get(r.escola_id).apoios++;
+    }
     const periodo = gpsFaixaGrafico_(r.data, filtro.granularidade);
     const celula = gpsChave_(r.escola_id, periodo);
     if (!periodos.has(periodo)) periodos.set(periodo, { periodo, previstas: 0, contabilizadas: 0, comprovadas: 0 });
@@ -43,6 +47,11 @@ function gpsDadosTerritorio(filtro) {
       Date.parse(filtro.fim) - Date.parse(filtro.inicio) > 366 * 86400000 ||
       !['semanal', 'quinzenal', 'mensal', 'ano'].includes(filtro.granularidade) ||
       !['', 'visita', 'apoio'].includes(filtro.tipo)) throw new Error('Filtro inválido');
+  const camada = filtro.camada || 'atividades';
+  if (!['atividades','calor','visitas','apoios','frequencia','avaliacoes','plataformas','prioridades'].includes(camada)) throw new Error('Camada inválida');
+  if (['frequencia','avaliacoes','plataformas','prioridades'].includes(camada) && perfil.papel !== 'CEC') {
+    throw new Error('Camada disponível para o CEC.');
+  }
   const hoje = gpsHoje_();
   const escopo = perfil.papel === 'CEC' ? '' : perfil.pec_id;
   const consulta = { ...filtro, pec_id: perfil.papel === 'AT' ? '' : escopo || filtro.pec_id,
@@ -56,6 +65,22 @@ function gpsDadosTerritorio(filtro) {
   const escolas = gpsTabela_(base, 'escolas').registros.filter(r => !visiveis || visiveis.has(r.id));
   const atividades = gpsAtividadesBase_(base, hoje).filter(r => !escopo || r.pec_id === escopo);
   const dados = gpsAgregarTerritorio_(escolas, atividades, consulta);
+  dados.camada = camada;
+  if (['frequencia','avaliacoes','plataformas','prioridades'].includes(camada)) {
+    const tabelas = {frequencia:'frequencias', avaliacoes:'indicadores', plataformas:'plataformas'};
+    const registros = camada === 'prioridades' ? gpsPrioridadesBase_(base, Number(filtro.fim.slice(0, 4))) :
+      gpsTabela_(base, tabelas[camada]).registros;
+    const contagem = new Map();
+    for (const r of registros) {
+      const ano = String(r.ano);
+      const noPeriodo = r.inicio && r.fim ? r.inicio >= filtro.inicio && r.fim <= filtro.fim :
+        /^\d{4}$/.test(ano) && ano >= filtro.inicio.slice(0,4) && ano <= filtro.fim.slice(0,4);
+      if (noPeriodo && r.revisar !== true) contagem.set(r.escola_id, (contagem.get(r.escola_id) || 0) + 1);
+    }
+    for (const p of dados.pontos) p.cobertura = contagem.get(p.id) || 0;
+  }
+  const municipios = new Map(gpsTabela_(base, 'municipios').registros.map(r => [r.id, r.nome]));
+  for (const p of dados.pontos) p.municipio = municipios.get(p.municipio_id) || '';
   const json = JSON.stringify(dados);
   if (Utilities.newBlob(json).getBytes().length < 95000) cache.put(chave, json, 30);
   return dados;
@@ -72,7 +97,7 @@ function gpsOpcoesTerritorio() {
   const pastas = ids('pasta_id');
   const opcoes = registros => registros.map(({ id, nome }) => ({ id, nome }));
   return {
-    hoje: gpsHoje_(), escolas: opcoes(escolas),
+    hoje: gpsHoje_(), camadasPedagogicas: perfil.papel === 'CEC', escolas: opcoes(escolas),
     municipios: opcoes(gpsTabela_(base, 'municipios').registros.filter(r => !escolasIds || municipios.has(r.id))),
     pecs: perfil.papel === 'AT' ? [] : opcoes(gpsTabela_(base, 'pecs').registros.filter(r => !escopo || r.id === escopo)),
     pastas: perfil.papel === 'AT' ? [] : opcoes(gpsTabela_(base, 'pastas').registros.filter(r => !escopo || pastas.has(r.id)))
@@ -82,6 +107,7 @@ function gpsOpcoesTerritorio() {
 // Execute no editor de laboratório com um CSV autorizado na pasta privada do laboratório.
 function gpsCarregarCadastroTerritorial_() {
   const id = PropertiesService.getScriptProperties().getProperty('GPS_LAB_CADASTRO_CSV_ID');
+  if (gpsModoDemonstracao_()) throw new Error('Importação institucional indisponível em demonstração.');
   if (!id) throw new Error('Configure o CSV de cadastro territorial');
   const doc = gpsLerArquivoLaboratorio_(id);
   if (!doc.grades || doc.grades.length !== 1) throw new Error('Cadastro deve ser um CSV');
@@ -119,4 +145,68 @@ function gpsCadastroTerritorial_(grade) {
   }
   if (!escolas.size) throw new Error('Cadastro territorial vazio');
   return { municipios: [...municipios.values()], escolas: [...escolas.values()] };
+}
+
+const GPS_MUNICIPIOS_MAPA = ['miracatu', 'juquia', 'iguape', 'ilha comprida', 'pedro de toledo', 'itariri'];
+
+function gpsCoordenadas_(latitude, longitude) {
+  if (latitude === '' || longitude === '' || latitude == null || longitude == null) return null;
+  const lat = Number(latitude);
+  const lon = Number(longitude);
+  return Math.abs(lat) <= 90 && Math.abs(lon) <= 180 ? [lat, lon] : null;
+}
+
+function gpsValidarDivisas_(geojson) {
+  if (geojson?.type !== 'FeatureCollection' || geojson.features?.length !== GPS_MUNICIPIOS_MAPA.length) {
+    throw new Error('GeoJSON deve conter os seis municípios da URE.');
+  }
+  const vistos = new Set();
+  let total = 0;
+  return geojson.features.map(f => {
+    const nome = String(f.properties?.municipio || f.properties?.name || '');
+    const chave = gpsNormalizar_(nome);
+    if (!GPS_MUNICIPIOS_MAPA.includes(chave) || vistos.has(chave)) throw new Error('Município ausente ou duplicado.');
+    vistos.add(chave);
+    const { type, coordinates } = f.geometry || {};
+    const p = type === 'Polygon' ? [coordinates] : type === 'MultiPolygon' ? coordinates : null;
+    if (!Array.isArray(p) || !p.length || !p.every(poligono => Array.isArray(poligono) && poligono.length &&
+      poligono.every(anel => Array.isArray(anel) && anel.length >= 4 && anel.every(pos => {
+        total++;
+        return total <= 12000 && Array.isArray(pos) && Number.isFinite(pos[0]) &&
+          Number.isFinite(pos[1]) && gpsCoordenadas_(pos[1], pos[0]);
+      }) && anel[0][0] === anel[anel.length - 1][0] && anel[0][1] === anel[anel.length - 1][1]))) {
+      throw new Error('Divisas inválidas ou acima de 12 mil vértices.');
+    }
+    return { nome, chave, cor: GPS_MUNICIPIOS_MAPA.indexOf(chave), poligonos: p };
+  });
+}
+
+function gpsCartografia() {
+  gpsSessao_();
+  if (gpsModoDemonstracao_()) return { modo: 'esquematico', motivo: 'Mapa esquemático com dados sintéticos.' };
+  const props = PropertiesService.getScriptProperties();
+  const id = props.getProperty('GPS_LAB_GEOJSON_ID');
+  const fonte = props.getProperty('GPS_LAB_GEOJSON_FONTE');
+  if (!id || !fonte) return { modo: 'pendente', motivo: 'Divisas oficiais aguardam configuração de GeoJSON autorizado.' };
+  try {
+    const pasta = props.getProperty('GPS_LAB_FOLDER_ID');
+    const arquivo = DriveApp.getFileById(id);
+    const pais = arquivo.getParents();
+    let autorizado = false;
+    while (pais.hasNext()) if (pais.next().getId() === pasta) autorizado = true;
+    if (!autorizado || arquivo.getSize() > 1500000) throw new Error('Arquivo cartográfico fora do escopo permitido.');
+    return { modo: 'geografico', fonte, divisas: gpsValidarDivisas_(JSON.parse(arquivo.getBlob().getDataAsString('UTF-8'))),
+      sede: props.getProperty('GPS_LAB_SEDE_FONTE')
+        ? gpsCoordenadas_(props.getProperty('GPS_LAB_SEDE_LATITUDE'), props.getProperty('GPS_LAB_SEDE_LONGITUDE')) : null };
+  } catch {
+    return { modo: 'pendente', motivo: 'GeoJSON indisponível ou inválido. Confira a pasta, o formato e a fonte.' };
+  }
+}
+
+function gpsDistanciaLinearKm_(a, b) {
+  const rad = graus => graus * Math.PI / 180;
+  const dLat = rad(b[0] - a[0]);
+  const dLon = rad(b[1] - a[1]);
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(rad(a[0])) * Math.cos(rad(b[0])) * Math.sin(dLon / 2) ** 2;
+  return 6371 * 2 * Math.asin(Math.sqrt(Math.min(1, h)));
 }

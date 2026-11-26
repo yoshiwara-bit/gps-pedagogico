@@ -498,6 +498,87 @@ test('decisão preserva agenda original, mantém atraso na cobrança e exclui vi
 test('cabeçalhos e referências exibem rótulos e nomes em vez das chaves internas', () => {
   assert.equal(gps.gpsRotuloCampo_('componente_id'), 'Componente curricular');
   const nomes = { escola_id: new Map([['E', 'Escola fictícia']]) };
-  assert.equal(gps.gpsValorPainel_({ escola_id: 'E' }, 'escola_id', nomes), 'Escola fictícia');
+  assert.deepEqual(plain(gps.gpsValorPainel_({ escola_id: 'E' }, 'escola_id', nomes)), { texto: 'Escola fictícia', escola_id: 'E' });
   assert.equal(gps.gpsValorPainel_({ escola_id: 'X' }, 'escola_id', nomes), 'Cadastro indisponível');
+});
+
+test('GeoJSON aceita seis polígonos nomeados e recusa ausência, duplicação e anel aberto', () => {
+  const nomes = ['Miracatu', 'Juquiá', 'Iguape', 'Ilha Comprida', 'Pedro de Toledo', 'Itariri'];
+  const features = nomes.map(municipio => ({ properties: { municipio },
+    geometry:{ type:'Polygon', coordinates:[[[-40,-10],[-39,-10],[-39,-11],[-40,-10]]] } }));
+  assert.equal(gps.gpsValidarDivisas_({type:'FeatureCollection',features}).length, 6);
+  assert.throws(() => gps.gpsValidarDivisas_({type:'FeatureCollection',features:features.slice(1)}), /seis/);
+  assert.throws(() => gps.gpsValidarDivisas_({type:'FeatureCollection',features:[...features.slice(1),features[1]]}), /duplicado/);
+  features[0].geometry.coordinates[0][3] = [-42,-10];
+  assert.throws(() => gps.gpsValidarDivisas_({type:'FeatureCollection',features}), /inválidas/);
+  assert.equal(gps.gpsCoordenadas_(null, 0), null);
+  assert.equal(gps.gpsDistanciaLinearKm_([0,0],[0,0]), 0);
+  assert.ok(Math.abs(gps.gpsDistanciaLinearKm_([0,0],[0,1]) - 111.195) < .01);
+});
+
+test('frequência por intervalo pondera dados e indica escolas ausentes e linhas duplicadas', () => {
+  const criar = (escola_id,presencas,denominador) => ({ escola_id,presencas,denominador,inicio:'2026-10-01',fim:'2026-10-07' });
+  const a = criar('A',8,10);
+  const b = criar('B',30,30);
+  const c = criar('C',90,100);
+  const resultado = gps.gpsSerieFrequencia_([a,b,c,c],['A','B','C','D']);
+  assert.equal(resultado[0].valor,95);
+  assert.equal(resultado[0].semCobertura,2);
+});
+
+test('cadastro enriquecido exige fonte e rejeita códigos duplicados', () => {
+  const cab = ['codigo_seduc', 'logradouro_pdf', 'fonte_pdf', 'total_alunos_pdf'];
+  const r = ['12', 'Endereço fictício', 'Fonte sintética', '120'];
+  const [ficha] = gps.gpsPrepararFichasCSV_([cab,r]);
+  assert.equal(ficha.escola_id,'12');
+  assert.equal(ficha.endereco,'Endereço fictício');
+  assert.throws(() => gps.gpsPrepararFichasCSV_([cab,r,r]), /duplicado/);
+});
+
+test('painéis negam indicadores para AT e respeitam escopo escolar', () => {
+  assert.throws(() => gps.gpsDadosIndicadores_({}, {papel:'AT'}, 'plataformas', {}), /CEC/);
+  const orig = gps.gpsSessao_;
+  const escopo = gps.gpsConsultaEscolas_;
+  gps.gpsSessao_ = () => ({ base:{}, perfil:{papel:'PEC',pec_id:'P1'} });
+  gps.gpsConsultaEscolas_ = () => [{id:'E1',nome:'Escola fictícia'}];
+  try {
+    assert.throws(() => gps.gpsFichaEscola('E2','cadastro'), /perfil/);
+    assert.match(gps.gpsFichaEscola('E1','avaliacoes').aviso,/CEC/);
+  } finally {
+    gps.gpsSessao_ = orig; gps.gpsConsultaEscolas_ = escopo;
+  }
+});
+
+test('séries de plataformas impedem comparações entre escalas e períodos repetidos', () => {
+  const linhas = [
+    {valor:10,unidade:'tarefas',plataforma:'tarefa',inicio:'2026-01-01',fim:'2026-01-07'},
+    {valor:15,unidade:'tarefas',plataforma:'tarefa',inicio:'2026-01-08',fim:'2026-01-14'}
+  ];
+  assert.equal(gps.gpsSerieIndicador_('plataformas',linhas,'E','tarefas').length,2);
+  assert.equal(gps.gpsSerieIndicador_('plataformas',[...linhas,linhas[0]],'E','tarefas').length,0);
+  assert.equal(gps.gpsSerieIndicador_('plataformas',[linhas[0],{...linhas[1],unidade:'alunos'}],'E','tarefas').length,0);
+});
+
+test('barras empilhadas exigem uma distribuição completa em escala única', () => {
+  const filtro = {escola_id:'E', metrica:'percentual_nivel'};
+  const dados = [{ano:2025,escala:'X',nivel:'Básico',valor:45}, {ano:2025,escala:'X',nivel:'Proficiente',valor:55}];
+  assert.equal(gps.gpsDistribuicaoNiveis_(dados,filtro).length,2);
+  assert.equal(gps.gpsDistribuicaoNiveis_(dados.slice(1),filtro).length,0);
+  assert.equal(gps.gpsDistribuicaoNiveis_([dados[0],{...dados[1],escala:'Y'}],filtro).length,0);
+});
+
+test('importação de medições exige fonte e valida cada unidade sem criar farol', () => {
+  const comuns = ['escola_id','inicio','fim','granularidade','fonte'];
+  const linha = ['E','2026-01-01','2026-01-07','semanal','Sintético'];
+  const freq = [...comuns,'presencas','denominador'];
+  const [r] = gps.gpsPrepararMedicoesCSV_([freq,[...linha,'40','50']],'frequencias');
+  assert.equal(r.presencas,40);
+  assert.equal(r.farol,undefined);
+  assert.throws(() => gps.gpsPrepararMedicoesCSV_([freq,[...linha,'51','50']],'frequencias'),/inválidos/);
+  assert.throws(() => gps.gpsPrepararMedicoesCSV_([freq,[...linha,'40','50'],[...linha,'40','50']],'frequencias'),/duplicada/);
+  const plat = [...comuns,'plataforma','metrica','unidade','valor'];
+  const [p] = gps.gpsPrepararMedicoesCSV_([plat,[...linha,'tarefa','atividades','registros','12']],'plataformas');
+  assert.equal(p.unidade,'registros');
+  assert.equal(p.valor,12);
+  assert.throws(() => gps.gpsPrepararMedicoesCSV_([plat,[...linha,'outra','atividades','registros','12']],'plataformas'),/inválidos/);
 });

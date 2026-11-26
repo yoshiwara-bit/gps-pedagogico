@@ -81,6 +81,7 @@ function gpsDadosDemonstracao_(data) {
       id: 'DEMO-TERMO' + i, visita_id: r.id, pec_id: r.pec_id, tipo: 'termo_visita', observacao: 'Evidência fictícia.'
     })),
     indicadores: avaliacoes,
+    ...gpsAmostraPedagogica_(escolas.map(r => r.id), data),
     criterios: [
       { id: 'DEMO-C1', fonte: 'saresp', metrica: 'nota', escala: escalaHistorica, direcao: 'abaixo', limite: 4, versao: 'demo-v1', aprovado_cec: true },
       { id: 'DEMO-C2', fonte: 'prova_paulista', metrica: 'acerto', escala: escalaAtual, direcao: 'abaixo', limite: 60, versao: 'demo-v1', aprovado_cec: true }
@@ -93,4 +94,38 @@ function gpsDadosDemonstracao_(data) {
 
 function gpsModoDemonstracao_() {
   return PropertiesService.getScriptProperties().getProperty('GPS_LAB_MODO') === 'demonstracao';
+}
+
+
+function gpsAmostraPedagogica_(escolas, data) {
+  const deslocar = dias => new Date(Date.parse(data) + dias * 86400000).toISOString().slice(0, 10);
+  const fonte = 'Amostra sintética da etapa 4';
+  return {
+    fichas_escolas: escolas.map((escola_id, i) => ({ id: escola_id, escola_id, segmentos: 'Anos finais (fictício)',
+      estudantes: 150 + i * 3, professores: 16 + i, turmas: 7 + i % 4, fonte })),
+    frequencias: escolas.slice(0, 8).flatMap((escola_id, i) => [21, 14, 7].map(dias => ({
+      id: gpsChave_('DEMO-FREQ', escola_id, dias), escola_id, inicio: deslocar(-dias),
+      fim: deslocar(-dias + 6), presencas: 340 + i * 3 + (21 - dias), denominador: 400,
+      granularidade: 'semanal', fonte
+    }))),
+    plataformas: GPS_PLATAFORMAS.flatMap(([plataforma], i) => escolas.slice(0, 3).map((escola_id, j) => ({
+      id: gpsChave_('DEMO-PLATAFORMA', plataforma, escola_id), escola_id, plataforma,
+      inicio: deslocar(-21), fim: deslocar(-15), granularidade: 'semanal', metrica: 'atividade_sintetica',
+      unidade: 'registros fictícios', valor: 5 + i + j, fonte
+    })))
+  };
+}
+
+function gpsAtualizarAmostraEtapa4_() {
+  if (!gpsModoDemonstracao_()) throw new Error('Amostras disponíveis somente no modo demonstração.');
+  gpsComTrava_(() => {
+    const base = gpsAbrirBase_();
+    gpsCriarEstrutura_(base);
+    const ids = gpsTabela_(base, 'escolas').registros.map(r => r.id).filter(id => /^DEMO-E\d+$/.test(id));
+    const data = PropertiesService.getScriptProperties().getProperty('GPS_LAB_DEMO_DATA') || gpsHoje_();
+    for (const [tabela, linhas] of Object.entries(gpsAmostraPedagogica_(ids, data))) {
+      const existentes = new Set(gpsTabela_(base, tabela).registros.map(r => r.id));
+      gpsAnexar_(base, tabela, linhas.filter(r => !existentes.has(r.id)));
+    }
+  });
 }

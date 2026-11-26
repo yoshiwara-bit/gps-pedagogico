@@ -16,6 +16,21 @@
   h1 { margin:.25rem 0 0; font-size:clamp(1.55rem,4vw,2.25rem); }
   h2 { margin-top:0; }
   main { padding-block:1.25rem 3rem; }
+  .gps-layout { display:grid; grid-template-columns:minmax(13rem, 16rem) minmax(0, 1fr); align-items:start; }
+  .gps-layout.menu-recolhido { grid-template-columns:auto minmax(0, 1fr); }
+  .gps-lateral { position:sticky; top:0; max-height:100vh; overflow:auto; background:white; border-inline-end:1px solid var(--borda); padding:.75rem; }
+  .gps-lateral button { width:100%; text-align:start; }
+  #gps-menu { margin-bottom:.5rem; }
+  #gps-navegacao { display:grid; }
+  #gps-navegacao button { border-inline-start:3px solid transparent; border-bottom:0; }
+  #gps-navegacao button[aria-current] { border-inline-start-color:var(--turquesa); }
+  #gps-navegacao small { display:block; color:#51666b; font-weight:400; }
+  main.largura { width:100%; min-width:0; margin-block:0; }
+  @media(max-width:760px) {
+    .gps-layout, .gps-layout.menu-recolhido { grid-template-columns:minmax(0,1fr); }
+    .gps-lateral { position:static; max-height:55vh; border-inline-end:0; }
+    #gps-navegacao { grid-template-columns:repeat(2,minmax(0,1fr)); }
+  }
   nav { border-bottom:1px solid var(--borda); background:white; }
   nav .largura { display:flex; gap:.25rem; flex-wrap:wrap; }
   nav button { border:0; background:white; border-bottom:3px solid transparent; border-radius:0; color:var(--petroleo); }
@@ -40,6 +55,12 @@
   .farol-azul { background:#e4f1ff; color:#204879; }
   .farol-cinza { background:#edf0f1; color:#384b51; }
   .farol-verde { background:#dcf4e2; color:#185a2a; }
+  @media print {
+    .gps-layout, .gps-layout.menu-recolhido { display:block; }
+    .gps-lateral, form, button { display:none !important; }
+    .tabela { overflow:visible; }
+    table button[data-escola] { display:inline !important; color:inherit; background:none; padding:0; border:0; }
+  }
   #mais { margin-top:.75rem; }
 </style>
 </head>
@@ -50,15 +71,39 @@
     <span class="etiqueta experimental"><?= demonstracao ? 'Demonstração · dados sintéticos' : 'Ambiente experimental' ?> · <?= papel ?></span>
   </div>
 </header>
-<nav aria-label="Navegação principal"><div class="largura">
-  <button type="button" data-abrir="inicio" aria-current="page">Visão geral</button>
-  <button type="button" data-abrir="territorio">Território</button>
-  <button type="button" data-abrir="consultas">Consultas</button>
-  <? if (papel !== 'AT') { ?><button type="button" data-abrir="registros">Registros e alertas</button><? } ?>
-</div></nav>
-<main class="largura">
+<div class="gps-layout" id="gps-layout">
+<aside class="gps-lateral">
+  <button type="button" id="gps-menu" aria-expanded="true" aria-controls="gps-navegacao">Recolher menu</button>
+  <nav id="gps-navegacao" aria-label="Navegação principal">
+    <button type="button" data-abrir="inicio" aria-current="page">Painel estratégico</button>
+    <button type="button" data-abrir="territorio">Mapa territorial</button>
+    <button type="button" data-abrir="escolas">Unidades escolares</button>
+    <? if (papel === 'CEC') { ?>
+    <button type="button" data-abrir="indicadores" data-indicador="avaliacoes">Avaliações</button>
+    <button type="button" data-abrir="indicadores" data-indicador="frequencia">Frequência</button>
+    <button type="button" data-abrir="indicadores" data-indicador="plataformas">Plataformas digitais</button>
+    <? } ?>
+    <button type="button" data-abrir="agenda">Agenda pedagógica</button>
+    <? if (papel !== 'AT') { ?>
+    <button type="button" data-abrir="registros" data-registro="plano">Planos de Trabalho</button>
+    <button type="button" data-abrir="registros" data-registro="termo">Termos de visita</button>
+    <button type="button" data-abrir="registros" data-registro="decisao">Justificativas</button>
+    <button type="button" data-abrir="consultas" data-consulta="obrigacoes_documentais">Regularidade documental</button>
+    <? } ?>
+    <? if (papel === 'CEC') { ?><button type="button" data-abrir="consultas" data-consulta="prioridades">Prioridades pedagógicas</button><? } ?>
+    <button type="button" data-abrir="pendencia">Professores e formações <small>Em preparação</small></button>
+    <button type="button" data-abrir="pendencia">Orientações pedagógicas <small>Em preparação</small></button>
+    <? if (papel === 'CEC') { ?><button type="button" data-abrir="consultas" data-consulta="metas">Gestão do CEC <small>Parcial</small></button><? } ?>
+    <? if (papel !== 'PEC') { ?><button type="button" data-abrir="pendencia">Central administrativa <small>Em preparação</small></button><? } ?>
+    <? if (papel === 'CEC') { ?><button type="button" data-abrir="consultas" data-consulta="revisoes">Integridade dos dados <small>Parcial</small></button><? } ?>
+    <? if (papel !== 'AT') { ?><button type="button" data-abrir="registros" data-registro="alertas">Central de alertas</button><? } ?>
+    <button type="button" data-abrir="consultas" data-consulta="visitas">Relatórios <small>Parcial</small></button>
+    <? if (papel === 'CEC') { ?><button type="button" data-abrir="configuracoes">Configurações</button><? } ?>
+  </nav>
+</aside>
+<main class="largura" id="gps-conteudo" tabindex="-1">
   <section data-pagina="inicio">
-    <h2>Visão geral</h2>
+    <h2>Painel estratégico</h2>
     <p>Atividades do ano no seu perfil, antes da aplicação de filtros.</p>
     <div class="metricas" id="gps-resumo" aria-live="polite">
       <div><strong id="gps-total-escolas">—</strong>Escolas no escopo</div>
@@ -66,6 +111,15 @@
       <div><strong id="gps-total-contabilizadas">—</strong>Contabilizadas</div>
       <div><strong id="gps-total-comprovadas">—</strong>Comprovadas</div>
     </div>
+    <? if (papel === 'CEC') { ?>
+    <h3>Acompanhamento do CEC</h3>
+    <div class="metricas" id="gps-resumo-cec" aria-live="polite">
+      <div><strong data-resumo="escolasPrioritarias">—</strong>Escolas prioritárias</div>
+      <div><strong data-resumo="turmasPrioritarias">—</strong>Turmas prioritárias</div>
+      <div><strong data-resumo="pendenciasDocumentais">—</strong>Pendências vencidas</div>
+      <div><strong data-resumo="alertasAbertos">—</strong>Alertas abertos</div>
+    </div>
+    <? } ?>
     <dl>
       <dt><span class="etiqueta">Operacional no piloto</span></dt>
       <dd>Consulta por perfil, recortes do território e, para PECs com atribuição, registro de atividade e evidência.</dd>
@@ -95,7 +149,7 @@
     <? if (papel !== 'AT') { ?><option value="alertas">Alertas</option><option value="obrigacoes_documentais">Regularidade documental</option><? } ?>
   </select>
   <p id="estado" role="status"></p>
-  <div class="tabela" hidden><table><thead></thead><tbody></tbody></table></div>
+  <div class="tabela" id="gps-tabela-consulta" hidden><table><thead></thead><tbody></tbody></table></div>
   <button id="mais" type="button" hidden>Carregar próxima página</button>
   <details id="gps-revisar" hidden><summary>Validar indicador (CEC)</summary>
     <form id="gps-form-revisar" class="gps-grade">
@@ -107,7 +161,10 @@
   </details>
   </section>
   <?!= gpsIncluir_('Atuacao') ?>
+  <?!= gpsIncluir_('Logos') ?>
+  <?!= gpsIncluir_('Interface') ?>
 </main>
+</div>
 <script>
   const secao = document.querySelector('#secao');
   const mais = document.querySelector('#mais');
@@ -124,7 +181,13 @@
       const celula = document.createElement(tipo);
       if (tipo === 'th') celula.scope = 'col';
       if (tipo === 'td' && campo && typeof campo === 'object') {
-        celula.textContent = campo.texto;
+        if (campo.escola_id) {
+          const botao = document.createElement('button');
+          botao.type = 'button';
+          botao.textContent = campo.texto;
+          botao.dataset.escola = campo.escola_id;
+          celula.append(botao);
+        } else celula.textContent = campo.texto;
         if (['vermelho', 'amarelo', 'verde', 'azul', 'cinza'].includes(campo.cor)) {
           celula.classList.add('farol-' + campo.cor);
         }
@@ -164,19 +227,47 @@
 
   secao.addEventListener('change', () => carregar(true));
   mais.addEventListener('click', () => carregar());
+  if (document.querySelector('#gps-resumo-cec')) {
+    google.script.run.withSuccessHandler(dados => {
+      for (const item of document.querySelectorAll('[data-resumo]')) item.textContent = dados[item.dataset.resumo] ?? '—';
+    }).withFailureHandler(() => {}).gpsResumoEstrategico();
+  }
   const navegacao = document.querySelectorAll('[data-abrir]');
-  let carregouConsulta = false;
-  for (const botao of navegacao) botao.addEventListener('click', () => {
-    const alvo = botao.dataset.abrir;
+  const menu = document.querySelector('#gps-menu');
+  const fecharMenu = recolhido => {
+    document.querySelector('#gps-navegacao').hidden = recolhido;
+    document.querySelector('#gps-layout').classList.toggle('menu-recolhido', recolhido);
+    menu.setAttribute('aria-expanded', String(!recolhido));
+    menu.textContent = recolhido ? 'Abrir menu' : 'Recolher menu';
+  };
+  fecharMenu(matchMedia('(max-width:760px)').matches);
+  menu.addEventListener('click', () => fecharMenu(menu.getAttribute('aria-expanded') === 'true'));
+  window.gpsAbrirModulo = (alvo, opcoes = {}) => {
     for (const pagina of document.querySelectorAll('[data-pagina]')) pagina.hidden = pagina.dataset.pagina !== alvo;
     for (const item of navegacao) {
-      if (item === botao) item.setAttribute('aria-current', 'page');
+      if (item === opcoes.botao) item.setAttribute('aria-current', 'page');
       else item.removeAttribute('aria-current');
     }
-    if (alvo === 'consultas' && !carregouConsulta) {
-      carregouConsulta = true;
+    if (alvo === 'consultas') {
+      if (opcoes.consulta) secao.value = opcoes.consulta;
       carregar(true);
     }
+    if (alvo === 'registros') {
+      for (const painel of document.querySelectorAll('[data-formulario]')) painel.hidden = painel.dataset.formulario !== opcoes.registro;
+    }
+    if (alvo === 'pendencia') document.querySelector('#gps-modulo-pendente').textContent = opcoes.nome;
+    document.dispatchEvent(new CustomEvent('gps:modulo', { detail: { alvo, ...opcoes } }));
+    if (matchMedia('(max-width:760px)').matches) fecharMenu(true);
+    document.querySelector('#gps-conteudo').focus();
+  };
+  for (const botao of navegacao) botao.addEventListener('click', () => {
+    const { abrir, consulta, indicador, registro } = botao.dataset;
+    window.gpsAbrirModulo(abrir, { consulta, indicador, registro, botao, nome: botao.firstChild.textContent.trim() });
+  });
+  document.querySelector('#gps-alertas-gerais').addEventListener('click', () => window.gpsAbrirModulo('consultas', { consulta: 'alertas' }));
+  document.querySelector('#gps-tabela-consulta').addEventListener('click', evento => {
+    const botao = evento.target.closest('[data-escola]');
+    if (botao) window.gpsAbrirFicha(botao.dataset.escola);
   });
 </script>
 </body>

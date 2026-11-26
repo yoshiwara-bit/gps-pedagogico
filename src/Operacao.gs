@@ -47,12 +47,12 @@ function gpsSalvarPlano(dados) {
   return gpsComTrava_(() => {
     const { base, perfil } = gpsSessao_();
     const r = gpsValidarAtividadeWeb_(base, perfil, dados);
-    const horario = dados.horario || '';
-    if (horario && !/^([01]\d|2[0-3]):[0-5]\d$/.test(horario)) throw new Error('Horário inválido');
-    const id = gpsChave_(r.tipo, r.pec_id, r.data, r.escola_id, horario);
+    const periodo_dia = dados.periodo_dia || '';
+    if (!['', 'manhã', 'tarde'].includes(periodo_dia)) throw new Error('Período inválido');
+    const id = gpsChave_(r.tipo, r.pec_id, r.data, r.escola_id, periodo_dia);
     const plano_id = gpsChave_('plano_web', id);
     const tabela = r.tipo === 'visita' ? 'visitas' : 'apoios';
-    const atividade = { ...r, id, plano_id, horario, status: 'agendada' };
+    const atividade = { ...r, id, plano_id, periodo_dia, status: 'agendada' };
     gpsAnexar_(base, 'planos', [{ id: plano_id, pec_id: r.pec_id, periodo: r.data.slice(0, 7), objetivo: gpsTextoWeb_(dados.objetivo) }]);
     gpsAnexar_(base, tabela, [atividade]);
     gpsAuditar_(base, tabela, id, 'registro_web', perfil.id);

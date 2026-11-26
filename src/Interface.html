@@ -1,0 +1,392 @@
+<style>
+  .gps-lista { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,13rem),1fr)); gap:.6rem; margin:1rem 0; }
+  .gps-lista button { background:white; border:1px solid var(--borda); color:var(--petroleo); text-align:start; }
+  .gps-lista small { display:block; font-weight:400; }
+  .gps-lista img { display:block; max-width:56px; max-height:36px; margin-bottom:.4rem; }
+  .gps-ficha-fatos { display:grid; gap:.6rem; grid-template-columns:repeat(auto-fit,minmax(min(100%,12rem),1fr)); }
+  .gps-ficha-fatos div { padding:.75rem; background:white; border:1px solid var(--borda); border-radius:.5rem; overflow-wrap:anywhere; }
+  .gps-ficha-fatos dd { margin:.25rem 0 0; }
+  .gps-grafico { display:grid; gap:.55rem; padding:.75rem; background:white; border:1px solid var(--borda); border-radius:.5rem; }
+  .gps-grafico svg { width:100%; max-height:15rem; }
+  .gps-grafico li { margin-block:.3rem; }
+  .gps-grafico progress { display:inline-block; width:min(10rem,55%); accent-color:var(--turquesa); }
+</style>
+<section data-pagina="escolas" hidden>
+  <h2>Unidades escolares</h2>
+  <label>Pesquisar por escola, município ou código SEDUC <input id="gps-busca-escola" type="search"></label>
+  <p id="gps-escolas-estado" role="status"></p>
+  <div class="gps-lista" id="gps-escolas-lista"></div>
+</section>
+<section data-pagina="ficha" hidden>
+  <button type="button" id="gps-voltar-escolas">Voltar às unidades</button>
+  <h2 id="gps-ficha-titulo">Ficha da escola</h2>
+  <div class="gps-lista" id="gps-ficha-secoes" aria-label="Seções da ficha"></div>
+  <p id="gps-ficha-estado" role="status"></p>
+  <div id="gps-ficha-dados"></div>
+</section>
+<section data-pagina="agenda" hidden>
+  <h2>Agenda pedagógica diária</h2>
+  <form id="gps-agenda-filtro" class="gps-grade">
+    <label>Data de referência <input type="date" name="data" required></label><button>Consultar dia</button>
+  </form>
+  <p id="gps-agenda-estado" role="status"></p>
+  <div id="gps-agenda-tabela"></div>
+</section>
+<section data-pagina="indicadores" hidden>
+  <h2 id="gps-indicador-titulo">Indicadores pedagógicos</h2>
+  <div class="gps-lista" id="gps-indicador-catalogo" aria-label="Painéis disponíveis"></div>
+  <form id="gps-indicador-filtro" class="gps-grade">
+    <label>Município<select name="municipio_id"></select></label>
+    <label>Escola<select name="escola_id"></select></label>
+    <label>Ano <input name="ano" type="number" min="1900" max="2100"></label>
+    <label id="gps-granularidade">Período da fonte<select name="granularidade">
+      <option value="">Todos</option><option value="semanal">Semanal</option><option value="quinzenal">Quinzenal</option>
+      <option value="mensal">Mensal</option><option value="acumulado">Acumulado no ano</option><option value="anual">Histórico anual</option>
+    </select></label>
+    <label>Segmento<select name="segmento"></select></label>
+    <label>Série<select name="serie"></select></label>
+    <label>Turma<select name="turma_id"></select></label>
+    <label id="gps-indicador-metrica">Indicador<select name="metrica"></select></label>
+    <button>Aplicar filtros</button>
+  </form>
+  <p id="gps-indicador-estado" role="status"></p>
+  <div id="gps-indicador-graficos"></div>
+  <div class="gps-lista">
+    <button id="gps-exportar-csv" type="button" hidden>Baixar tabela para Excel (CSV)</button>
+    <button id="gps-exportar-grafico" type="button" hidden>Baixar gráfico (SVG)</button>
+    <button id="gps-imprimir" type="button">Imprimir ou salvar em PDF</button>
+  </div>
+  <div id="gps-indicador-tabela"></div>
+</section>
+<section data-pagina="pendencia" hidden>
+  <h2 id="gps-modulo-pendente"></h2>
+  <p class="etiqueta pendente">Em preparação</p>
+  <p>A integração deste módulo está pendente de requisitos ou fontes homologadas.</p>
+</section>
+<section data-pagina="configuracoes" hidden>
+  <h2>Configurações</h2>
+  <p>As fontes e as regras homologadas são mantidas na planilha privada e nas propriedades do projeto Apps Script.</p>
+  <p>Na demonstração, a automação e o envio de e-mails ficam desativados.</p>
+</section>
+<script>
+(() => {
+  const el = id => document.getElementById(id);
+  const lista = el('gps-escolas-lista');
+  const busca = el('gps-busca-escola');
+  const secoes = [['cadastro','Cadastro'], ['equipe','Equipe gestora'], ['agenda','Agenda'],
+    ['frequencia','Frequência'], ['avaliacoes','Avaliações'], ['plataformas','Plataformas'],
+    ['acompanhamentos','Acompanhamentos'], ['prioridades','Prioridades'], ['historico','Histórico']];
+  const avaliacoes = [['prova_paulista','Prova Paulista'], ['avd','Avaliação Diagnóstica'],
+    ['saresp','SARESP'], ['saeb','SAEB'], ['enem','Simulado ENEM']];
+  const plataformas = [['matific_ai','Matific – Anos Iniciais'], ['matific_af','Matific – Anos Finais'],
+    ['khan','Khan Academy'], ['leia','Leia SP'], ['redacao','Redação Paulista'], ['tarefa','Tarefa SP'],
+    ['elefante','Elefante Letrado'], ['speak','SPEAK'], ['open_english','Open English'], ['robotica','Robótica'],
+    ['alura','Alura'], ['programacao','Programação']];
+  const coresFarol = ['verde','amarelo','vermelho','azul','cinza'];
+  const rotuloFarol = { verde: 'Faixa verde', amarelo: 'Faixa amarela', vermelho: 'Faixa vermelha', azul: 'Faixa azul', cinza: 'Sem classificação' };
+  let escolas;
+  let escolaAtiva;
+  let pedidoFicha = 0;
+  let pedidoIndicador = 0;
+  let pedidoAgenda = 0;
+  let tipoAtual;
+  let ultimoIndicador;
+  function baixar(nome, texto, tipo) {
+    const url = URL.createObjectURL(new Blob([texto], { type:tipo }));
+    const link = document.createElement('a');
+    link.href = url; link.download = nome; link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+  el('gps-exportar-csv').addEventListener('click', () => {
+    const celula = valor => {
+      const texto = String(valor?.texto ?? valor ?? '');
+      return '"' + (/^[\s]*[=+@-]/.test(texto) ? "'" : '') + texto.replaceAll('"', '""') + '"';
+    };
+    const registros = [ultimoIndicador.colunas, ...ultimoIndicador.linhas];
+    baixar('indicadores-gps.csv', '\uFEFF' + registros.map(r => r.map(celula).join(';')).join('\r\n'), 'text/csv;charset=utf-8');
+  });
+  el('gps-exportar-grafico').addEventListener('click', () => {
+    const svg = el('gps-indicador-graficos').querySelector('svg');
+    if (svg) baixar('grafico-gps.svg', new XMLSerializer().serializeToString(svg), 'image/svg+xml');
+  });
+  el('gps-imprimir').addEventListener('click', () => window.print());
+  let fonteAtual = '';
+  const filtro = el('gps-indicador-filtro');
+  const data = el('gps-agenda-filtro');
+  const status = (id, texto) => { el(id).textContent = texto; };
+  function rpc(nome, args, ok, falha) {
+    google.script.run.withSuccessHandler(ok).withFailureHandler(falha)[nome](...args);
+  }
+  function botao(rotulo, acao) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.textContent = rotulo;
+    b.addEventListener('click', acao);
+    return b;
+  }
+  const normalizar = t => String(t || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
+  function tabela(alvo, colunas, linhas) {
+    alvo.replaceChildren();
+    if (!linhas.length) return;
+    const area = document.createElement('div');
+    area.className = 'tabela';
+    const t = document.createElement('table');
+    const cab = t.createTHead().insertRow();
+    const corpo = t.createTBody();
+    const texto = v => v && typeof v === 'object' ? v.texto : v ?? '';
+    let direcao = 1;
+    let ultima = -1;
+    function montar(registros) {
+      corpo.replaceChildren();
+      for (const linha of registros) {
+        const tr = corpo.insertRow();
+        for (const valor of linha) {
+          const td = tr.insertCell();
+          if (valor?.escola_id) td.append(botao(valor.texto, () => window.gpsAbrirFicha(valor.escola_id, valor.texto)));
+          else td.textContent = texto(valor) === '' ? '—' : texto(valor);
+          if (coresFarol.includes(valor?.cor)) td.classList.add('farol-' + valor.cor);
+        }
+      }
+    }
+    colunas.forEach((coluna, i) => {
+      const th = document.createElement('th');
+      th.scope = 'col';
+      th.append(botao(coluna, () => {
+        direcao = ultima === i ? -direcao : 1;
+        ultima = i;
+        for (const c of cab.cells) c.removeAttribute('aria-sort');
+        th.setAttribute('aria-sort', direcao === 1 ? 'ascending' : 'descending');
+        montar([...linhas].sort((a, b) => String(texto(a[i])).localeCompare(String(texto(b[i])), 'pt-BR', { numeric:true }) * direcao));
+      }));
+      cab.append(th);
+    });
+    montar(linhas);
+    area.append(t); alvo.append(area);
+  }
+  function mostrarEscolas() {
+    const termo = normalizar(busca.value);
+    const resultados = (escolas || []).filter(r => normalizar([r.nome, r.municipio, r.codigo].join(' ')).includes(termo));
+    lista.replaceChildren(...resultados.map(r => {
+      const b = botao(r.nome, () => window.gpsAbrirFicha(r.id));
+      const municipio = document.createElement('small');
+      municipio.textContent = r.municipio;
+      b.append(municipio);
+      return b;
+    }));
+    status('gps-escolas-estado', resultados.length ? resultados.length + ' escolas no resultado.' : 'Nenhuma escola encontrada.');
+  }
+  function carregarEscolas(ok, falha) {
+    if (escolas) { ok(escolas); return; }
+    rpc('gpsListarEscolas', [], dados => { escolas = dados; ok(dados); }, falha);
+  }
+  busca.addEventListener('input', mostrarEscolas);
+  function ficha(secao) {
+    const atual = ++pedidoFicha;
+    const dados = el('gps-ficha-dados');
+    dados.replaceChildren();
+    status('gps-ficha-estado', 'Carregando seção…');
+    [...el('gps-ficha-secoes').children].forEach(btn => btn.setAttribute('aria-pressed', String(btn.dataset.secao === secao)));
+    rpc('gpsFichaEscola', [escolaAtiva, secao], resposta => {
+      if (atual !== pedidoFicha) return;
+      status('gps-ficha-titulo', resposta.nome);
+      status('gps-ficha-estado', resposta.aviso || (resposta.dados || resposta.linhas?.length ? '' : 'Nenhum registro nessa seção.'));
+      if (resposta.dados) {
+        const campos = document.createElement('dl');
+        campos.className = 'gps-ficha-fatos';
+        for (const [rotulo, valor] of Object.entries(resposta.dados)) {
+          const grupo = document.createElement('div');
+          const dt = document.createElement('dt'); dt.textContent = rotulo;
+          const dd = document.createElement('dd'); dd.textContent = valor === '' || valor == null ? 'Não informado' : valor;
+          grupo.append(dt, dd); campos.append(grupo);
+        }
+        dados.append(campos);
+        if (resposta.localizacao) {
+          const mapa = document.createElement('a');
+          mapa.href = 'https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent(resposta.localizacao.join(','));
+          mapa.target = '_blank'; mapa.rel = 'noopener noreferrer'; mapa.textContent = 'Ver localização no Google Maps';
+          dados.append(mapa);
+        }
+      }
+      if (resposta.linhas?.length) tabela(dados, resposta.colunas, resposta.linhas);
+    }, erro => { if (atual === pedidoFicha) status('gps-ficha-estado', erro.message); });
+  }
+  window.gpsAbrirFicha = (id, nome) => {
+    escolaAtiva = id;
+    status('gps-ficha-titulo', nome || escolas?.find(r => r.id === id)?.nome || 'Ficha da escola');
+    window.gpsAbrirModulo('ficha');
+    ficha('cadastro');
+  };
+  el('gps-ficha-secoes').replaceChildren(...secoes.map(([id, nome]) => {
+    const b = botao(nome, () => ficha(id)); b.dataset.secao = id; return b;
+  }));
+  el('gps-voltar-escolas').addEventListener('click', () => window.gpsAbrirModulo('escolas'));
+  function consultarAgenda() {
+    const atual = ++pedidoAgenda;
+    status('gps-agenda-estado', 'Consultando agenda…');
+    rpc('gpsAgendaDoDia', [data.elements.data.value], registros => {
+      if (atual !== pedidoAgenda) return;
+      status('gps-agenda-estado', registros.length ? registros.length + ' atividades na data.' : 'Sem atividades nessa data.');
+      tabela(el('gps-agenda-tabela'), ['Escola', 'PEC', 'Atividade', 'Período', 'Situação', 'Foco pedagógico'],
+        registros.map(r => [r.escola, r.pec, r.tipo, r.periodo, r.situacao.replaceAll('_', ' '), r.foco]));
+    }, erro => { if (atual === pedidoAgenda) status('gps-agenda-estado', erro.message); });
+  }
+  data.addEventListener('submit', e => { e.preventDefault(); consultarAgenda(); });
+  function opcoes(campo, itens) {
+    const seletor = filtro.elements[campo];
+    const valor = seletor.value;
+    seletor.replaceChildren(new Option('Todos', ''), ...itens.map(r => typeof r === 'string'
+      ? new Option(r, r) : new Option(r.nome, r.id)));
+    if (Array.from(seletor.options).some(o => o.value === valor)) seletor.value = valor;
+  }
+  function graficos(dados) {
+    const alvo = el('gps-indicador-graficos');
+    alvo.replaceChildren();
+    const serie = dados.evolucao;
+    if (serie.some(r => Number.isFinite(r.valor))) {
+      const bloco = document.createElement('div'); bloco.className = 'gps-grafico';
+      const titulo = document.createElement('h3'); titulo.textContent = 'Evolução no período';
+      const ns = 'http://www.w3.org/2000/svg';
+      const svg = document.createElementNS(ns, 'svg'); svg.setAttribute('viewBox', '0 0 600 180');
+      svg.setAttribute('role', 'img'); svg.setAttribute('aria-label', 'Gráfico de linha; períodos e valores na lista abaixo');
+      const valores = serie.map(r => r.valor).filter(Number.isFinite);
+      const min = Math.min(...valores);
+      const amplitude = Math.max(...valores) - min || 1;
+      let anterior;
+      const periodos = document.createElement('ul');
+      serie.forEach((r, i) => {
+        const item = document.createElement('li');
+        const cobertura = r.semCobertura ? ' · cobertura parcial' : '';
+        const variacao = Number.isFinite(r.variacao) ? ' · ' + r.variacao.toFixed(2).replace('.', ',') + ' p.p.' : '';
+        item.textContent = r.periodo + ' · ' + (r.valor == null ? 'sem dado' : r.valor.toLocaleString('pt-BR')) + variacao + cobertura;
+        periodos.append(item);
+        if (!Number.isFinite(r.valor)) { anterior = null; return; }
+        const x = 20 + i * 560 / Math.max(1, serie.length - 1);
+        const y = 155 - (r.valor - min) * 130 / amplitude;
+        if (anterior) {
+          const linha = document.createElementNS(ns,'line');
+          for (const [k,v] of Object.entries({x1:anterior.x,y1:anterior.y,x2:x,y2:y,stroke:'#06796e','stroke-width':3})) linha.setAttribute(k,v);
+          svg.append(linha);
+        }
+        const ponto = document.createElementNS(ns,'circle');
+        ponto.setAttribute('cx',x); ponto.setAttribute('cy',y); ponto.setAttribute('r',4); ponto.setAttribute('fill','#06796e');
+        svg.append(ponto); anterior = {x,y};
+      });
+      bloco.append(titulo, svg, periodos); alvo.append(bloco);
+    }
+    if (dados.niveis?.length) {
+      const bloco = document.createElement('div'); bloco.className = 'gps-grafico';
+      const titulo = document.createElement('h3'); titulo.textContent = 'Distribuição dos níveis de aprendizagem';
+      const barra = document.createElement('div'); barra.style.display = 'flex'; barra.style.height = '1.4rem';
+      barra.setAttribute('aria-hidden','true');
+      const lista = document.createElement('ul');
+      const cores = ['#087b73','#6cbcb2','#324b77','#b27a36','#72588d','#678a55'];
+      dados.niveis.forEach((r, i) => {
+        const cor = cores[i % cores.length];
+        const segmento = document.createElement('span'); segmento.style.width = r.valor + '%';
+        segmento.style.background = cor; barra.append(segmento);
+        const item = document.createElement('li');
+        item.textContent = r.nivel + ' · ' + r.valor.toLocaleString('pt-BR') + '%';
+        item.style.color = cor; lista.append(item);
+      });
+      bloco.append(titulo, barra, lista); alvo.append(bloco);
+    }
+    if (dados.comparativo?.length) {
+      const bloco = document.createElement('div'); bloco.className = 'gps-grafico';
+      const titulo = document.createElement('h3'); titulo.textContent = 'Comparação entre escolas · último período no recorte';
+      bloco.append(titulo);
+      const maximo = Math.max(1, ...dados.comparativo.map(r => r.valor));
+      for (const r of dados.comparativo) {
+        const linha = document.createElement('div');
+        const barra = document.createElement('progress');
+        barra.max = maximo; barra.value = r.valor; barra.setAttribute('aria-label', r.nome);
+        linha.append(document.createTextNode(r.nome + ' · ' + r.valor.toLocaleString('pt-BR') + ' '), barra);
+        bloco.append(linha);
+      }
+      alvo.append(bloco);
+    }
+    if (dados.distribuicao.length) {
+      const bloco = document.createElement('div'); bloco.className = 'gps-grafico';
+      const titulo = document.createElement('h3'); titulo.textContent = 'Distribuição de registros por farol';
+      bloco.append(titulo);
+      for (const { cor, quantidade } of dados.distribuicao) {
+        const linha = document.createElement('div');
+        linha.classList.add('farol-' + cor);
+        const legenda = rotuloFarol[cor];
+        const barra = document.createElement('progress');
+        barra.max = dados.total; barra.value = quantidade; barra.setAttribute('aria-label', legenda);
+        linha.append(document.createTextNode(legenda + ' · ' + quantidade + ' '), barra); bloco.append(linha);
+      }
+      alvo.append(bloco);
+    }
+  }
+  function consultarIndicador() {
+    const atual = ++pedidoIndicador;
+    const valores = { ...Object.fromEntries(new FormData(filtro)), fonte: fonteAtual };
+    status('gps-indicador-estado', 'Consultando…');
+    el('gps-exportar-csv').hidden = true;
+    el('gps-exportar-grafico').hidden = true;
+    rpc('gpsConsultaIndicadores', [tipoAtual, valores], resultado => {
+      if (atual !== pedidoIndicador) return;
+      status('gps-indicador-estado', (resultado.total ? resultado.total + ' registros. Até 200 na tabela. ' : 'Nenhum registro no recorte. ') + resultado.aviso);
+      for (const [campo, itens] of Object.entries({ metrica: resultado.filtros.metricas, segmento: resultado.filtros.segmentos,
+        serie: resultado.filtros.series, turma_id: resultado.filtros.turmas })) opcoes(campo, itens);
+      for (const b of el('gps-indicador-catalogo').children) {
+        b.setAttribute('aria-pressed', String(b.dataset.fonte === fonteAtual));
+        const contagem = resultado.catalogo.find(r => r.id === b.dataset.fonte);
+        if (contagem && !fonteAtual) b.querySelector('small').textContent = contagem.registros + ' registros no recorte';
+        else if (b.querySelector('small')) b.querySelector('small').textContent = '';
+      }
+      ultimoIndicador = resultado;
+      graficos(resultado);
+      el('gps-exportar-csv').hidden = !resultado.linhas.length;
+      el('gps-exportar-grafico').hidden = !el('gps-indicador-graficos').querySelector('svg');
+      tabela(el('gps-indicador-tabela'), resultado.colunas, resultado.linhas);
+    }, erro => { if (atual === pedidoIndicador) status('gps-indicador-estado', erro.message); });
+  }
+  filtro.addEventListener('submit', e => { e.preventDefault(); consultarIndicador(); });
+  for (const campo of ['municipio_id','escola_id']) filtro.elements[campo].addEventListener('change', () => {
+    for (const dependente of ['segmento','serie','turma_id','metrica']) filtro.elements[dependente].value = '';
+  });
+  function painel(tipo) {
+    tipoAtual = tipo;
+    fonteAtual = tipo === 'avaliacoes' ? 'prova_paulista' : '';
+    const titulos = { avaliacoes:'Avaliações', frequencia:'Frequência escolar', plataformas:'Plataformas digitais' };
+    status('gps-indicador-titulo', titulos[tipo]);
+    filtro.querySelector('#gps-granularidade').hidden = tipo === 'avaliacoes';
+    filtro.querySelector('#gps-indicador-metrica').hidden = tipo === 'frequencia';
+    filtro.reset();
+    for (const campo of ['segmento','serie','turma_id','metrica']) opcoes(campo, []);
+    const catalogo = tipo === 'avaliacoes' ? avaliacoes : tipo === 'plataformas' ? [['','Visão regional'],...plataformas] : [];
+    const logos = window.gpsLogos || {};
+    el('gps-indicador-catalogo').replaceChildren(...catalogo.map(([id, nome]) => {
+      const b = botao(nome, () => {
+        fonteAtual = id;
+        filtro.elements.metrica.value = '';
+        status('gps-indicador-titulo', id ? nome : titulos[tipo]);
+        consultarIndicador();
+      });
+      b.dataset.fonte = id;
+      if (logos[id]) {
+        const imagem = document.createElement('img');
+        imagem.src = logos[id]; imagem.alt = ''; b.prepend(imagem);
+      }
+      b.append(document.createElement('small'));
+      return b;
+    }));
+    rpc('gpsOpcoesTerritorio', [], dados => {
+      if (tipoAtual !== tipo) return;
+      opcoes('municipio_id', dados.municipios);
+      opcoes('escola_id', dados.escolas);
+    }, () => {});
+    consultarIndicador();
+  }
+  document.addEventListener('gps:modulo', ({detail}) => {
+    if (detail.alvo === 'escolas') carregarEscolas(mostrarEscolas, () => status('gps-escolas-estado', 'Consulta indisponível.'));
+    if (detail.alvo === 'agenda' && !data.elements.data.value) {
+      rpc('gpsOpcoesTerritorio', [], dados => { data.elements.data.value = dados.hoje; consultarAgenda(); },
+        () => status('gps-agenda-estado', 'Selecione a data para consultar.'));
+    }
+    if (detail.alvo === 'indicadores') painel(detail.indicador);
+  });
+})();
+</script>

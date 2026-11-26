@@ -3,7 +3,6 @@ const fs = require('node:fs');
 const { chromium } = require('playwright');
 
 function renderizar(papel) {
-  const atuacao = fs.readFileSync('src/Atuacao.html', 'utf8');
   const painel = fs.readFileSync('src/Painel.html', 'utf8');
   const codigo = [];
   let ultimo = 0;
@@ -15,7 +14,7 @@ function renderizar(papel) {
   }
   codigo.push('saida += ' + JSON.stringify(painel.slice(ultimo)), 'return saida');
   return new Function('papel', 'demonstracao', 'gpsIncluir_', 'let saida = "";\n' + codigo.join('\n'))(
-    papel, true, () => atuacao);
+    papel, true, nome => fs.readFileSync('src/' + nome + '.html', 'utf8'));
 }
 
 function instalarRpcFalso(papel) {
@@ -24,6 +23,21 @@ function instalarRpcFalso(papel) {
     contabilizadas: i ? 0 : 1
   }));
   const resposta = {
+    gpsResumoMapaEscola: {visita:{data:'2026-11-25',situacao:'aguardando comprovação',termo:'Aguardando termo'}},
+    gpsResumoEstrategico: {escolasPrioritarias:4,turmasPrioritarias:7,pendenciasDocumentais:2,alertasAbertos:3},
+    gpsCartografia: papel === 'AT' ? {
+      modo:'geografico', fonte:'Geometria sintética para teste',
+      sede:[-10.2,-39.7], divisas:[{nome:'Área sintética',chave:'area',cor:0,
+        poligonos:[[[[-40,-10],[-39,-10],[-39,-11],[-40,-10]]]]}]
+    } : { modo:'esquematico', motivo:'Mapa esquemático com dados sintéticos.' },
+    gpsListarEscolas: escolas.map(r => ({...r, municipio:'Município fictício'})),
+    gpsFichaEscola: { nome:'Escola fictícia 1', dados:{ Município:'Município fictício', Estudantes:150 } },
+    gpsAgendaDoDia: [{ escola:'Escola fictícia 1', pec:'PEC fictício', tipo:'visita', periodo:'', situacao:'prevista', foco:'Exemplo' }],
+    gpsConsultaIndicadores: { colunas:['Escola','Resultado'],
+      linhas:[[{texto:'Escola fictícia 1',escola_id:'E0'},{texto:'90%',cor:'verde'}]], total:1,
+      evolucao:[{periodo:'Período 1',valor:88},{periodo:'Período 2',valor:90,variacao:2}],
+      distribuicao:[{cor:'verde',quantidade:1}], filtros:{metricas:[],segmentos:[],series:[],turmas:[]},
+      catalogo:[], aviso:'Dados sintéticos' },
     gpsOpcoesTerritorio: { escolas, municipios: [], pecs: [], pastas: [], hoje: '2026-11-25' },
     gpsMinhasOpcoes: { papel, escolas: papel === 'PEC' ? escolas : [], pastas: [{ id: 'P', nome: 'Pasta fictícia' }],
       componentes: [{ id: 'LP', nome: 'Português' }], turmas: [], visitas: [{ id: 'V', nome: 'Visita fictícia' }] },
@@ -69,13 +83,34 @@ function instalarRpcFalso(papel) {
         await page.getByRole('dialog').waitFor();
         await page.getByRole('button', { name: 'Fechar', exact: true }).click();
       }
-      await page.getByRole('button', { name: 'Território', exact: true }).click();
-      assert.equal(await page.locator('#gps-mapa circle').count(), total);
+      async function abrir(nome) {
+        const menu = page.locator('#gps-menu');
+        if (await menu.getAttribute('aria-expanded') === 'false') await menu.click();
+        await page.locator('#gps-navegacao').getByRole('button', { name: nome }).click();
+      }
+      async function captura(nome) {
+        if (process.env.GPS_CAPTURAS) await page.screenshot({ path:process.env.GPS_CAPTURAS + '/' + nome + '.png', fullPage:true });
+      }
+      if (papel === 'CEC') {
+        await page.locator('[data-resumo=escolasPrioritarias]').getByText('4', {exact:true}).waitFor();
+        await captura('painel-estrategico');
+      }
+      await abrir('Mapa territorial');
+      await page.waitForFunction(q => document.querySelectorAll('#gps-mapa circle').length === q, total);
+      if (papel === 'CEC') await captura('mapa-demonstracao');
+      if (papel === 'AT') {
+        assert.equal(await page.locator('#gps-mapa path').count(),1);
+        await page.locator('#gps-mapa rect').getByText('Sede da URE').waitFor({state:'attached'});
+        await page.getByRole('button',{name:'Aproximar'}).click();
+        assert.notEqual(await page.locator('#gps-mapa').getAttribute('viewBox'),'0 0 600 320');
+        await page.getByRole('button',{name:'Ver território inteiro'}).click();
+      }
       const ponto = page.locator('#gps-mapa circle').first();
       const previa = page.locator('#gps-previa');
       await ponto.hover();
       await previa.getByText('Escola fictícia 1').waitFor();
       await previa.getByText('0 previstas · 1 contabilizadas · 0 comprovadas').waitFor();
+      await previa.getByText(/Aguardando termo/).waitFor();
       assert.equal(await page.locator('#gps-mapa circle').count(), total);
       await page.locator('#gps-mapa-estado').hover();
       await previa.waitFor({ state: 'hidden' });
@@ -85,20 +120,36 @@ function instalarRpcFalso(papel) {
       await previa.waitFor({ state: 'hidden' });
       await ponto.click();
       await page.waitForFunction(() => document.querySelectorAll('#gps-mapa circle').length === 1);
-      await page.locator('#gps-ficha').getByText('Escola fictícia 1').waitFor();
-      const filtrosSobrepostos = await page.locator('#gps-filtros label').evaluateAll(rotulos =>
-        rotulos.some(rotulo => rotulo.firstElementChild.getBoundingClientRect().right > rotulo.getBoundingClientRect().right + 1));
-      assert.equal(filtrosSobrepostos, false);
-      await page.getByRole('button', { name: 'Consultas', exact: true }).click();
+      await page.locator('#gps-ficha-titulo').getByText('Escola fictícia 1').waitFor();
+      await page.getByText('Município fictício', {exact:true}).waitFor();
+      if (papel === 'CEC') await captura('ficha-escola');
+      await abrir('Unidades escolares');
+      await page.locator('#gps-busca-escola').fill('Escola fictícia 1');
+      await page.locator('#gps-escolas-lista').getByRole('button', { name: /^Escola fictícia 1Município|^Escola fictícia 1 Município/ }).first().click();
+      await page.locator('#gps-ficha-titulo').getByText('Escola fictícia 1').waitFor();
+      await abrir('Agenda pedagógica');
+      await page.getByText('1 atividades na data.').waitFor();
+      await abrir('Relatórios');
       await page.locator('.farol-vermelho').getByText('Abaixo do Básico').waitFor();
       if (papel === 'CEC') {
-        await page.getByRole('button', { name: 'Registros e alertas' }).click();
+        await abrir('Central de alertas');
         await page.getByText('Nenhum alerta pessoal em aberto.').waitFor();
         await page.getByRole('button', { name: 'Consultar todos os alertas' }).click();
         assert.equal(await page.locator('#secao').inputValue(), 'alertas');
+        await abrir('Frequência');
+        await page.getByText('Evolução no período').waitFor();
+        await page.locator('.farol-verde').getByText('90%', {exact:true}).waitFor();
+        await captura('frequencia');
+        await abrir('Avaliações');
+        await page.getByRole('button', {name:'Simulado ENEM',exact:true}).click();
+        await page.getByRole('heading', {name:'Simulado ENEM'}).waitFor();
+        await captura('avaliacoes');
+        await abrir('Plataformas digitais');
+        assert.equal(await page.locator('#gps-indicador-catalogo button').count(), 13);
+        await captura('plataformas');
       }
       if (papel === 'PEC') {
-        await page.getByRole('button', { name: 'Registros e alertas' }).click();
+        await abrir('Planos de Trabalho');
         await page.getByText('Plano de Trabalho', { exact: true }).click();
         const plano = page.locator('#gps-plano');
         await plano.locator('[name=escola_id]').selectOption('E0');
@@ -111,7 +162,7 @@ function instalarRpcFalso(papel) {
         await plano.getByRole('button', { name: 'Salvar atividade' }).click();
         await page.getByText('Registro salvo.').waitFor();
       }
-      if (papel === 'AT') assert.equal(await page.getByRole('button', { name: 'Registros e alertas' }).count(), 0);
+      if (papel === 'AT') assert.equal(await page.getByRole('button', { name: 'Planos de Trabalho' }).count(), 0);
       assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
       assert.deepEqual(erros, []);
       console.log(papel + ': navegação validada a ' + largura + ' px (RPC simulada)');

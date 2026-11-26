@@ -1,6 +1,6 @@
 const GPS_SERIES = Array.from({length: 9}, (_, i) => 'EF' + (i + 1)).concat('EM1', 'EM2', 'EM3');
 const GPS_NIVEIS_AVD = ['Abaixo do Básico', 'Básico', 'Proficiente'];
-const GPS_FONTES = ['saresp', 'saeb', 'prova_paulista', 'avd', 'frequencia'];
+const GPS_FONTES = ['saresp', 'saeb', 'prova_paulista', 'avd', 'frequencia', 'enem'];
 
 function gpsProjetarCoorte_(indicador, ano) {
   const { fonte, ano: aplicacao, serie } = indicador;

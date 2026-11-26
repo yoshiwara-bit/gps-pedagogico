@@ -46,3 +46,10 @@ Etapas 13–18 (base, cruzamento/metas, alertas, sincronização, desempenho con
 ## Especificações da terceira missão
 
 Consulte [documento mestre e índice dos 22 módulos](docs/gps-2.0/00_DOCUMENTO_MESTRE.md) e [roteiro e critérios de aceite](docs/gps-2.0/23_ROTEIRO_E_ACEITE.md). O pacote original está preservado em `docs/gps-2.0/`. Os arquivos de orientação do pacote são referências históricas e a autorização de cada tarefa vem da conversa atual. A especificação prevalece sobre regras preliminares do produto em caso de divergência, sem dispensar homologação e autorização institucional.
+
+## Quarta missão: interface e território
+
+- Consulte o relatório e o guia de atualização da etapa 4. A ficha escolar é carregada por seção e deve validar o código da escola contra o escopo da sessão no servidor.
+- Em demonstração, use apenas amostras sintéticas sinalizadas. O modo geográfico requer GeoJSON verificado das seis divisas na pasta privada. A sede exige coordenadas e fonte verificadas.
+- Preserve o cálculo ponderado de frequência, as unidades das plataformas e as escalas das avaliações. Só exiba farol com homologação identificada. Cálculo linear de distância não representa rota rodoviária.
+- Verifique os perfis CEC, PEC e AT, as capturas sintéticas e os fluxos da etapa 3 antes de preparar pacote para revisão. Não atualize a implantação existente por conta própria.
