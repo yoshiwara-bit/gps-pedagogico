@@ -4,7 +4,12 @@
   .gps-grade label { display: grid; gap: .3rem; min-width: 0; }
   .gps-grade select, .gps-grade input { min-width: 0; width: 100%; }
   textarea, input { color: inherit; font: inherit; padding: .5rem; width: 100%; box-sizing: border-box; }
-  #gps-mapa { width: 100%; max-width: 46rem; background: #edf4f2; }
+  .gps-mapa-area { position: relative; max-width: 46rem; }
+  #gps-mapa { display: block; width: 100%; background: #edf4f2; }
+  #gps-previa { position: absolute; inset-inline-end: .5rem; inset-block-end: .5rem; max-width: calc(100% - 1rem);
+    padding: .55rem .75rem; border: 1px solid var(--borda); border-radius: .45rem; background: white;
+    box-shadow: 0 2px 8px #083d4326; pointer-events: none; }
+  #gps-previa-atividade { display: block; font-size: .875rem; }
   #gps-mapa circle { cursor: pointer; }
   #gps-calor { max-height: 22rem; overflow: auto; }
   .gps-barra { height: .4rem; width: 9rem; }
@@ -25,7 +30,13 @@
   </form>
   <p id="gps-territorio-estado" role="status"></p>
   <p>Mapa esquemático. As posições ilustram a distribuição e não representam limites geográficos.</p>
-  <svg id="gps-mapa" viewBox="0 0 600 320" aria-label="Mapa esquemático sem limites geográficos"></svg>
+  <div class="gps-mapa-area">
+    <svg id="gps-mapa" viewBox="0 0 600 320" aria-label="Mapa esquemático sem limites geográficos"></svg>
+    <div id="gps-previa" role="tooltip" hidden>
+      <strong id="gps-previa-nome"></strong>
+      <span id="gps-previa-atividade"></span>
+    </div>
+  </div>
   <p id="gps-mapa-estado" role="status"></p>
   <aside id="gps-ficha" class="gps-bloco" hidden>
     <h3 id="gps-ficha-nome"></h3>
@@ -116,6 +127,10 @@
     for (const valor of valores) tr.insertCell().textContent = valor;
     return tr;
   }
+  function textoAtividades(escola) {
+    return `${escola.previstas || 0} previstas · ${escola.contabilizadas || 0} contabilizadas · ${escola.comprovadas || 0} comprovadas`;
+  }
+
   function renderizar(dados) {
     const { resumo, pontos, periodos, calor } = dados;
     if (resumoInicial) {
@@ -129,11 +144,13 @@
     el('gps-ficha').hidden = !ficha;
     if (ficha) {
       el('gps-ficha-nome').textContent = ficha.nome;
-      el('gps-ficha-atividade').textContent =
-        `${ficha.previstas || 0} previstas · ${ficha.contabilizadas || 0} contabilizadas · ${ficha.comprovadas || 0} comprovadas`;
+      el('gps-ficha-atividade').textContent = textoAtividades(ficha);
     }
     const mapa = el('gps-mapa');
     mapa.replaceChildren();
+    const previa = el('gps-previa');
+    previa.hidden = true;
+    let pontoComPrevia;
     const locais = pontos.filter(p => Number.isFinite(p.latitude) && Number.isFinite(p.longitude));
     el('gps-mapa-estado').textContent = `${locais.length} de ${pontos.length} escolas com coordenadas`;
     const escala = (valor, conjunto, tamanho) => {
@@ -151,12 +168,37 @@
       ponto.setAttribute('tabindex', '0');
       ponto.setAttribute('role', 'button');
       ponto.setAttribute('aria-label', p.nome);
+      const ocultarPrevia = () => {
+        if (pontoComPrevia !== ponto) return;
+        previa.hidden = true;
+        ponto.removeAttribute('aria-describedby');
+        pontoComPrevia = null;
+      };
+      const abrirPrevia = () => {
+        pontoComPrevia?.removeAttribute('aria-describedby');
+        pontoComPrevia = ponto;
+        el('gps-previa-nome').textContent = p.nome;
+        el('gps-previa-atividade').textContent = textoAtividades(p);
+        previa.hidden = false;
+        ponto.setAttribute('aria-describedby', 'gps-previa');
+      };
+      ponto.addEventListener('mouseenter', abrirPrevia);
+      ponto.addEventListener('mouseleave', ocultarPrevia);
+      ponto.addEventListener('focus', abrirPrevia);
+      ponto.addEventListener('blur', ocultarPrevia);
       const selecionar = () => {
+        ocultarPrevia();
         filtros.elements.escola_id.value = p.id;
         consultar();
       };
       ponto.addEventListener('click', selecionar);
-      ponto.addEventListener('keydown', evento => { if (['Enter', ' '].includes(evento.key)) { evento.preventDefault(); selecionar(); } });
+      ponto.addEventListener('keydown', evento => {
+        if (evento.key === 'Escape') ocultarPrevia();
+        if (['Enter', ' '].includes(evento.key)) {
+          evento.preventDefault();
+          selecionar();
+        }
+      });
       mapa.append(ponto);
     }
     const grafico = el('gps-grafico');

@@ -71,7 +71,19 @@ function instalarRpcFalso(papel) {
       }
       await page.getByRole('button', { name: 'Território', exact: true }).click();
       assert.equal(await page.locator('#gps-mapa circle').count(), total);
-      await page.locator('#gps-mapa circle').first().click();
+      const ponto = page.locator('#gps-mapa circle').first();
+      const previa = page.locator('#gps-previa');
+      await ponto.hover();
+      await previa.getByText('Escola fictícia 1').waitFor();
+      await previa.getByText('0 previstas · 1 contabilizadas · 0 comprovadas').waitFor();
+      assert.equal(await page.locator('#gps-mapa circle').count(), total);
+      await page.locator('#gps-mapa-estado').hover();
+      await previa.waitFor({ state: 'hidden' });
+      await ponto.focus();
+      await previa.waitFor();
+      await ponto.press('Escape');
+      await previa.waitFor({ state: 'hidden' });
+      await ponto.click();
       await page.waitForFunction(() => document.querySelectorAll('#gps-mapa circle').length === 1);
       await page.locator('#gps-ficha').getByText('Escola fictícia 1').waitFor();
       const filtrosSobrepostos = await page.locator('#gps-filtros label').evaluateAll(rotulos =>
