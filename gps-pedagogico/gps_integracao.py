@@ -1,5 +1,6 @@
 
 import time
+import re
 import requests
 import streamlit as st
 
@@ -7,12 +8,31 @@ import streamlit as st
 def consultar_visitas_lab():
 
     config = st.secrets["gps_lab"]
+
+    url = str(config["url"]).strip()
+    chave = str(config["chave"]).strip()
+
+    url_esperada = (
+        "https://script.google.com/macros/s/"
+        "AKfycbzoxlwv-fLjmIr8b5nT5Kgc24vRwEAiMc_6hBK2vs0sVW34-VnB8sLKGkuHxGnxPVru/exec"
+    )
+
+    def falha(mensagem):
+        st.error(mensagem)
+        raise ValueError("Falha de validacao LAB.")
+
+    if url != url_esperada:
+        falha("D11 - Endereco da API diferente do Colab.")
+
+    if not re.fullmatch(r"[0-9a-f]{64}", chave):
+        falha("D12 - Formato da chave privada incorreto.")
+
     inicio = time.perf_counter()
 
     resposta = requests.post(
-        config["url"],
+        url,
         json={
-            "chave": config["chave"],
+            "chave": chave,
             "acao": "consultar_visitas"
         },
         timeout=30
@@ -21,15 +41,23 @@ def consultar_visitas_lab():
     resposta.raise_for_status()
     dados = resposta.json()
 
-    def falha(mensagem):
-        st.error(mensagem)
-        raise ValueError("Falha de validacao LAB.")
-
     if not isinstance(dados, dict):
         falha("D01 - Formato de resposta invalido.")
 
     if dados.get("status") == "NEGADO":
-        falha("D02 - Autenticacao ou acesso negado.")
+
+        mensagem = dados.get("mensagem", "")
+
+        if mensagem == "Credencial invalida.":
+            falha("D13 - Apps Script recusou a chave.")
+
+        if mensagem == "Acao nao permitida.":
+            falha("D14 - Acao nao reconhecida pela API.")
+
+        if mensagem == "Utilize uma consulta autenticada.":
+            falha("D15 - API recebeu GET em vez de POST.")
+
+        falha("D16 - Acesso negado por outro motivo.")
 
     if dados.get("status") != "OK":
         falha("D03 - Apps Script retornou erro.")
