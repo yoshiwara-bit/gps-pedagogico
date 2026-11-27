@@ -2300,6 +2300,21 @@ with st.sidebar:
     if st.button("🔄 Sincronizar Planilhas & Drive", use_container_width=True):
         st.cache_data.clear()
         st.rerun()
+    # Integração experimental isolada: não alimenta indicadores oficiais.
+    if eh_cec_ou_at and st.secrets.get("gps_lab", None):
+        with st.expander("Integração Drive — LAB", expanded=False):
+            st.caption("Teste técnico com dados fictícios; sem alterar os indicadores.")
+            if st.button("Testar conexão LAB", key="gps_teste_hibrido_lab"):
+                try:
+                    from gps_integracao import consultar_visitas_lab
+                    import time as tempo_lab
+                    inicio_lab = tempo_lab.perf_counter()
+                    resultado_lab = consultar_visitas_lab()
+                    duracao_lab = tempo_lab.perf_counter() - inicio_lab
+                    st.success("Conexão com a base LAB confirmada.")
+                    st.caption(f"Consulta externa: {resultado_lab['tempo_externo']:.3f} s | Consulta atual: {duracao_lab:.6f} s")
+                except Exception:
+                    st.error("Não foi possível consultar a base experimental.")
     if st.button("🚪 Sair / Trocar Usuário", use_container_width=True):
         st.session_state["autenticado"] = False
         st.rerun()
